@@ -30,23 +30,16 @@ func New(loc string) (h *Hippy, err error) {
 		s: make(storage),
 	}
 
+	// Open persistance file
 	if hip.f, err = os.OpenFile(loc, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644); err != nil {
 		return
 	}
 
 	h = &hip
-	h.rtxp = sync.Pool{
-		New: func() interface{} { return h.newReadTx() },
-	}
-
-	h.wtxp = sync.Pool{
-		New: func() interface{} { return h.newWriteTx() },
-	}
-
-	h.rwtxp = sync.Pool{
-		New: func() interface{} { return h.newReadWriteTx() },
-	}
-
+	// Initialize transaction pools
+	h.rtxp = sync.Pool{New: func() interface{} { return h.newReadTx() }}
+	h.wtxp = sync.Pool{New: func() interface{} { return h.newWriteTx() }}
+	h.rwtxp = sync.Pool{New: func() interface{} { return h.newReadWriteTx() }}
 	h.replay()
 	return
 }
@@ -55,15 +48,14 @@ func New(loc string) (h *Hippy, err error) {
 type Hippy struct {
 	mux sync.RWMutex
 
-	s storage
-	f *os.File
+	s storage  // In-memory storage
+	f *os.File // Persistant storage
 
-	// Pools
-	rtxp  sync.Pool
-	wtxp  sync.Pool
-	rwtxp sync.Pool
+	rtxp  sync.Pool // Read transaction pool
+	wtxp  sync.Pool // Write transaction pool
+	rwtxp sync.Pool // Read/Write transaction pool
 
-	closed bool
+	closed bool // Closed state
 }
 
 func (h *Hippy) replay() {
@@ -76,19 +68,21 @@ func (h *Hippy) replay() {
 
 	h.mux.Lock()
 	scnr := bufio.NewScanner(h.f)
+	// For each line..
 	for scnr.Scan() {
+		// Parse action, key, and value
 		if a, key, val, err = parseLogLine(scnr.Bytes()); err != nil {
 			continue
 		}
 
+		// Fulfill action
 		switch a {
 		case _put:
-			h.s[key] = val
+			h.s[key] = val // Put value by key
 		case _del:
-			delete(h.s, key)
+			delete(h.s, key) // Delete by key
 		}
 	}
-
 	h.mux.Unlock()
 }
 
@@ -99,11 +93,12 @@ func (h *Hippy) write(a map[string]action) (err error) {
 			return
 		}
 
+		// Fulfill action
 		switch v.a {
 		case _put:
-			h.s[k] = v.b
+			h.s[k] = v.b // Put value (by key)
 		case _del:
-			delete(h.s, k)
+			delete(h.s, k) // Delete key
 		}
 	}
 
