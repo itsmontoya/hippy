@@ -23,8 +23,13 @@ package main
 
 import (
         "fmt"
-        "github.com/itsmontoya/hippy"
+        "errors"
+		"time"
+		
+		"github.com/itsmontoya/hippy"
 )
+
+var ErrNoName = errors.New("no net is set")
 
 func main(){
 	var (
@@ -32,25 +37,40 @@ func main(){
 			err error
 	)
 
-	if db, err = hippy.New("test.db"); err != nil {
+	// Create new db, with the location referencing "./test.db"
+	if db, err = hippy.New("./test.db"); err != nil {
 			fmt.Println("Error opening:", err)
 			return
 	}
+	
+	go func(){
+		time.Sleep(time.Second * 3)
+		db.ReadWrite(setName)
+	}()
+	
+	// Continue to loop until we no longer encounter an error
+	for db.Read(checkName) != nil {
+		// Sleep for a second so we don't burn out the CPU
+		time.Sleep(time.Second)
+	}
+}
 
-	db.ReadWrite(func(tx *hippy.ReadWriteTx) (err error) {
-		tx.Put("name", []byte("John Doe"))
-		var (
-			name []byte
-			ok bool
-		)
+func setName(tx *hippy.ReadWriteTx) (err error) {
+	// Set key of "name" with a value of "John Doe" (represented as a byte-slice)
+	tx.Put("name", []byte("John Doe"))
+	return
+}
 
-		if name, ok = tx.Get("name"); ok {
-			fmt.Println("Name is", string(name))
-		} else {
-			fmt.Println("Name does not exist")
-		}
-
-		return
-	})
+func checkName(tx *hippy.ReadTx) (err error) {
+	// Get value set for the key of "name"
+	if name, ok := tx.Get("name"); ok {
+		fmt.Println("Name is", string(name))
+	} else {
+		// Name does not exist, set error to ErrNoName
+		fmt.Println("Name does not exist")
+		err = ErrNoName
+	}
+	
+	return
 }
 ```
