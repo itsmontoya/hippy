@@ -1,0 +1,6 @@
+*.pprof
+*.test
+*.db
+*.bdb
+*.pdf
+client
