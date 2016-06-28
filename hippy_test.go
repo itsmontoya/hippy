@@ -290,8 +290,13 @@ type LMap struct {
 }
 
 func (l *LMap) Get(k string) (b []byte, ok bool) {
+	var tgt []byte
 	l.mux.RLock()
-	b, ok = l.m[k]
+	if tgt, ok = l.m[k]; ok {
+		b = make([]byte, len(tgt))
+		copy(b, tgt)
+	}
+
 	l.mux.RUnlock()
 	return
 }
