@@ -111,14 +111,6 @@ func TestBasic(t *testing.T) {
 }
 
 func BenchmarkShortHippy(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		hippyRW(db, 1)
-	}
-
-	b.ReportAllocs()
-}
-
-func BenchmarkShortParaHippy(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			hippyRW(db, 1)
@@ -130,14 +122,6 @@ func BenchmarkShortParaHippy(b *testing.B) {
 }
 
 func BenchmarkBasicHippy(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		hippyRW(db, 100)
-	}
-
-	b.ReportAllocs()
-}
-
-func BenchmarkBasicParaHippy(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			hippyRW(db, 100)
@@ -149,14 +133,6 @@ func BenchmarkBasicParaHippy(b *testing.B) {
 }
 
 func BenchmarkAllGetHippy(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		hippyR(db, 100)
-	}
-
-	b.ReportAllocs()
-}
-
-func BenchmarkAllGetParaHippy(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			hippyR(db, 100)
@@ -168,14 +144,6 @@ func BenchmarkAllGetParaHippy(b *testing.B) {
 }
 
 func BenchmarkShortLMap(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		mapRW(mdb, 1)
-	}
-
-	b.ReportAllocs()
-}
-
-func BenchmarkShortParaLMap(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			mapRW(mdb, 1)
@@ -187,14 +155,6 @@ func BenchmarkShortParaLMap(b *testing.B) {
 }
 
 func BenchmarkBasicLMap(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		mapRW(mdb, 100)
-	}
-
-	b.ReportAllocs()
-}
-
-func BenchmarkBasicParaLMap(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			mapRW(mdb, 100)
@@ -206,14 +166,6 @@ func BenchmarkBasicParaLMap(b *testing.B) {
 }
 
 func BenchmarkAllGetLMap(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		mapR(mdb, 100)
-	}
-
-	b.ReportAllocs()
-}
-
-func BenchmarkAllGetParaLMap(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			mapR(mdb, 100)
@@ -225,13 +177,6 @@ func BenchmarkAllGetParaLMap(b *testing.B) {
 }
 
 func BenchmarkShortBolt(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		boltRW(bdb, 1)
-	}
-	b.ReportAllocs()
-}
-
-func BenchmarkShortParaBolt(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			boltRW(bdb, 1)
@@ -241,13 +186,6 @@ func BenchmarkShortParaBolt(b *testing.B) {
 }
 
 func BenchmarkBasicBolt(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		boltRW(bdb, 100)
-	}
-	b.ReportAllocs()
-}
-
-func BenchmarkBasicParaBolt(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			boltRW(bdb, 100)
@@ -257,14 +195,6 @@ func BenchmarkBasicParaBolt(b *testing.B) {
 }
 
 func BenchmarkAllGetBolt(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		boltR(bdb, 100)
-	}
-
-	b.ReportAllocs()
-}
-
-func BenchmarkAllGetParaBolt(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			boltR(bdb, 100)
