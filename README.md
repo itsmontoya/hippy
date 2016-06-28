@@ -16,3 +16,41 @@ BenchmarkShortLMap-4     1000000              2268 ns/op              80 B/op   
 BenchmarkBasicLMap-4       10000            177234 ns/op            8000 B/op       1000 allocs/op
 BenchmarkAllGetLMap-4      20000             58410 ns/op            8000 B/op       1000 allocs/op
 ```
+
+## Usage
+```go
+package main
+
+import (
+        "fmt"
+        "github.com/itsmontoya/hippy"
+)
+
+func main(){
+	var (
+			db *hippy.Hippy
+			err error
+	)
+
+	if db, err = hippy.New("test.db"); err != nil {
+			fmt.Println("Error opening:", err)
+			return
+	}
+
+	db.ReadWrite(func(tx *hippy.ReadWriteTx) (err error) {
+		tx.Put("name", []byte("John Doe"))
+		var (
+			name []byte
+			ok bool
+		)
+
+		if name, ok = tx.Get("name"); ok {
+			fmt.Println("Name is", string(name))
+		} else {
+			fmt.Println("Name does not exist")
+		}
+
+		return
+	})
+}
+```
