@@ -7,25 +7,33 @@ import (
 
 // ReadTx is a read-only transaction
 type ReadTx struct {
+	// Pointer to our DB's internal store
 	s *storage
 }
 
-// Get will get
+// Get will get a body and an ok value
 func (r *ReadTx) Get(k string) (b []byte, ok bool) {
 	var tgt []byte
+	// Get a non-pointer reference to storage
 	s := *r.s
 	if tgt, ok = s[k]; !ok {
+		// Target does not exist, return
 		return
 	}
 
+	// Pre-allocate b to be the length of target
 	b = make([]byte, len(tgt))
+	// Copy target to b
 	copy(b, tgt)
 	return
 }
 
 // Keys will list the keys for a DB
 func (r *ReadTx) Keys() (keys []string) {
+	// Pre-allocate keys to be the length of our internal storage
 	keys = make([]string, 0, len(*r.s))
+
+	// For each item in our internal storage, append key to keys
 	for k := range *r.s {
 		keys = append(keys, k)
 	}
@@ -37,11 +45,13 @@ func (r *ReadTx) Keys() (keys []string) {
 type ReadWriteTx struct {
 	mux sync.RWMutex
 
+	// Pointer to our DB's internal store
 	s *storage
+	// Actions map
 	a map[string]action
 }
 
-// Get will get
+// Get will get a body and an ok value
 func (rw *ReadWriteTx) Get(k string) (b []byte, ok bool) {
 	var (
 		ta  action
@@ -50,23 +60,30 @@ func (rw *ReadWriteTx) Get(k string) (b []byte, ok bool) {
 	)
 
 	rw.mux.RLock()
+	// If action exists for this key..
 	if ta, ok = rw.a[k]; ok {
+		// If action is PUT, set our target to the action body and goto copy
 		if ta.a == _put {
 			tgt = ta.b
 			goto COPY
 		}
 
+		// Action was DELETE, set ok to false and goto end
 		ok = false
 		goto END
 	}
 
+	// Get a non-pointer reference to storage
 	s = *rw.s
 	if tgt, ok = s[k]; !ok {
+		// Target does not exist, goto end
 		goto END
 	}
 
 COPY:
+	// Pre-allocate b to be the length of target
 	b = make([]byte, len(tgt))
+	// Copy target to b
 	copy(b, tgt)
 
 END:
@@ -77,11 +94,13 @@ END:
 
 // Put will put
 func (rw *ReadWriteTx) Put(k string, v []byte) (err error) {
+	// If key contains our separator value, return ErrInvalidKey
 	if strings.IndexByte(k, _separator) > -1 {
 		return ErrInvalidKey
 	}
 
 	rw.mux.Lock()
+	// Set a put action with the body
 	rw.a[k] = action{
 		a: _put,
 		b: v,
@@ -93,6 +112,7 @@ func (rw *ReadWriteTx) Put(k string, v []byte) (err error) {
 // Del will delete
 func (rw *ReadWriteTx) Del(k string) {
 	rw.mux.Lock()
+	// Set a delete action
 	rw.a[k] = action{
 		a: _del,
 	}
@@ -101,7 +121,9 @@ func (rw *ReadWriteTx) Del(k string) {
 
 // Keys will list the keys for a DB
 func (rw *ReadWriteTx) Keys() (keys []string) {
+	// Pre-allocate keys to be the length of our internal storage
 	keys = make([]string, 0, len(*rw.s))
+	// For each item in our internal storage, append key to keys
 	for k := range *rw.s {
 		keys = append(keys, k)
 	}
@@ -113,16 +135,19 @@ func (rw *ReadWriteTx) Keys() (keys []string) {
 type WriteTx struct {
 	mux sync.Mutex
 
+	// Actions map
 	a map[string]action
 }
 
 // Put will put
 func (w *WriteTx) Put(k string, v []byte) (err error) {
+	// If key contains our separator value, return ErrInvalidKey
 	if strings.IndexByte(k, _separator) > -1 {
 		return ErrInvalidKey
 	}
 
 	w.mux.Lock()
+	// Set a put action with the body
 	w.a[k] = action{
 		a: _put,
 		b: v,
@@ -134,6 +159,7 @@ func (w *WriteTx) Put(k string, v []byte) (err error) {
 // Del will delete
 func (w *WriteTx) Del(k string) {
 	w.mux.Lock()
+	// Set a delete action
 	w.a[k] = action{
 		a: _del,
 	}
