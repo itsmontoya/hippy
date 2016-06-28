@@ -9,11 +9,12 @@ import (
 
 const (
 	_none byte = iota
-	_put
-	_del
 
-	_separator = ':'
-	_newline   = '\n'
+	_put // Byte representing a PUT action
+	_del // Byte representing a DELETE action
+
+	_separator = ':'  // Separator used to split key and value
+	_newline   = '\n' // Character for newline
 )
 
 var (
@@ -27,6 +28,7 @@ var (
 // New returns a new Hippy
 func New(loc string) (h *Hippy, err error) {
 	hip := Hippy{
+		// Make the internal storage map, it would be a shame to panic on put!
 		s: make(storage),
 	}
 
@@ -40,6 +42,8 @@ func New(loc string) (h *Hippy, err error) {
 	h.rtxp = sync.Pool{New: func() interface{} { return h.newReadTx() }}
 	h.wtxp = sync.Pool{New: func() interface{} { return h.newWriteTx() }}
 	h.rwtxp = sync.Pool{New: func() interface{} { return h.newReadWriteTx() }}
+
+	// Replay file data to populate the database
 	h.replay()
 	return
 }
@@ -78,9 +82,11 @@ func (h *Hippy) replay() {
 		// Fulfill action
 		switch a {
 		case _put:
-			h.s[key] = val // Put value by key
+			// Put value by key
+			h.s[key] = val
 		case _del:
-			delete(h.s, key) // Delete by key
+			// Delete by key
+			delete(h.s, key)
 		}
 	}
 	h.mux.Unlock()
@@ -96,9 +102,11 @@ func (h *Hippy) write(a map[string]action) (err error) {
 		// Fulfill action
 		switch v.a {
 		case _put:
-			h.s[k] = v.b // Put value (by key)
+			// Put by key
+			h.s[k] = v.b
 		case _del:
-			delete(h.s, k) // Delete key
+			// Delete by key
+			delete(h.s, k)
 		}
 	}
 
@@ -106,16 +114,19 @@ func (h *Hippy) write(a map[string]action) (err error) {
 	return h.f.Sync()
 }
 
+// newReadTx returns a new read transaction, used by read transaction pool
 func (h *Hippy) newReadTx() *ReadTx {
 	return &ReadTx{&h.s}
 }
 
+// newWriteTx returns a new write transaction, used by write transaction pool
 func (h *Hippy) newWriteTx() *WriteTx {
 	return &WriteTx{
 		a: make(map[string]action),
 	}
 }
 
+// newReadWriteTx returns a new read/write transaction, used by read/write transaction pool
 func (h *Hippy) newReadWriteTx() *ReadWriteTx {
 	return &ReadWriteTx{
 		s: &h.s,
@@ -123,25 +134,30 @@ func (h *Hippy) newReadWriteTx() *ReadWriteTx {
 	}
 }
 
+// getReadTx returns a new read transaction from the read transaction pool
 func (h *Hippy) getReadTx() (tx *ReadTx) {
 	tx, _ = h.rtxp.Get().(*ReadTx)
 	return
 }
 
+// getWriteTx returns a new write transaction from the write transaction pool
 func (h *Hippy) getWriteTx() (tx *WriteTx) {
 	tx, _ = h.wtxp.Get().(*WriteTx)
 	return
 }
 
+// getReadWriteTx returns a new read/write transaction from the read/write transaction pool
 func (h *Hippy) getReadWriteTx() (tx *ReadWriteTx) {
 	tx, _ = h.rwtxp.Get().(*ReadWriteTx)
 	return
 }
 
+// putReadTx releases a read transaction back to the read transaction pool
 func (h *Hippy) putReadTx(tx *ReadTx) {
 	h.rtxp.Put(tx)
 }
 
+// putWriteTx releases a write transaction back to the write transaction pool
 func (h *Hippy) putWriteTx(tx *WriteTx) {
 	for k := range tx.a {
 		delete(tx.a, k)
@@ -150,6 +166,7 @@ func (h *Hippy) putWriteTx(tx *WriteTx) {
 	h.wtxp.Put(tx)
 }
 
+// putReadWriteTx releases a read/write transaction back to the read/write transaction pool
 func (h *Hippy) putReadWriteTx(tx *ReadWriteTx) {
 	for k := range tx.a {
 		delete(tx.a, k)
@@ -160,18 +177,21 @@ func (h *Hippy) putReadWriteTx(tx *ReadWriteTx) {
 
 // Read will return a read-only transaction
 func (h *Hippy) Read(fn func(*ReadTx) error) (err error) {
+	// Get a read transaction from the pool
 	tx := h.getReadTx()
 
 	h.mux.RLock()
 	err = fn(tx)
 	h.mux.RUnlock()
 
+	// Return read transaction to the pool
 	h.putReadTx(tx)
 	return
 }
 
 // ReadWrite returns a read/write transaction
 func (h *Hippy) ReadWrite(fn func(*ReadWriteTx) error) (err error) {
+	// Get a read/write transaction from the pool
 	tx := h.getReadWriteTx()
 
 	h.mux.Lock()
@@ -180,12 +200,14 @@ func (h *Hippy) ReadWrite(fn func(*ReadWriteTx) error) (err error) {
 	}
 	h.mux.Unlock()
 
+	// Return read/write transaction to the pool
 	h.putReadWriteTx(tx)
 	return
 }
 
 // Write returns a write-only transaction
 func (h *Hippy) Write(fn func(*WriteTx) error) (err error) {
+	// Get a write transaction from the pool
 	tx := h.getWriteTx()
 
 	h.mux.Lock()
@@ -194,61 +216,7 @@ func (h *Hippy) Write(fn func(*WriteTx) error) (err error) {
 	}
 	h.mux.Unlock()
 
+	// Return write transaction to the pool
 	h.putWriteTx(tx)
-	return
-}
-
-type action struct {
-	a byte
-	b []byte
-}
-
-type storage map[string][]byte
-
-func newLogLine(key string, a byte, b []byte) (out []byte) {
-	out = append(out, byte(a))
-	out = append(out, key...)
-	if a == _del {
-		goto END
-	}
-
-	out = append(out, _separator)
-	out = append(out, b...)
-
-END:
-	out = append(out, _newline)
-	return
-}
-
-func parseLogLine(b []byte) (a byte, key string, val []byte, err error) {
-	a = b[0]
-	switch a {
-	case _put, _del:
-	default:
-		err = ErrInvalidAction
-		return
-	}
-
-	var (
-		keyB []byte
-		i    = 1
-	)
-
-	for ; i < len(b); i++ {
-		if b[i] == _separator {
-			break
-		}
-
-		keyB = append(keyB, b[i])
-	}
-
-	if a == _del {
-		return
-	}
-
-	i++
-	key = string(keyB)
-	val = make([]byte, len(b)-i)
-	copy(val, b[i:])
 	return
 }
