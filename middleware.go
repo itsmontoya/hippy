@@ -22,7 +22,7 @@ func newMWWriter(in io.Writer, mws []Middleware) (out io.WriteCloser, err error)
 	for i, mw := range mws {
 		curr := w.li - i
 		if i == 0 {
-			w.wcs[curr], err = mw.Writer(out)
+			w.wcs[curr], err = mw.Writer(in)
 		} else {
 			w.wcs[curr], err = mw.Writer(w.wcs[curr+1])
 		}
@@ -67,7 +67,7 @@ func newMWReader(in io.Reader, mws []Middleware) (out io.ReadCloser, err error) 
 	for i, mw := range mws {
 		curr := r.li - i
 		if i == 0 {
-			r.rcs[curr], err = mw.Reader(out)
+			r.rcs[curr], err = mw.Reader(in)
 		} else {
 			r.rcs[curr], err = mw.Reader(r.rcs[curr+1])
 		}

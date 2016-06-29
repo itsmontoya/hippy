@@ -3,7 +3,9 @@ package hippy
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -20,6 +22,8 @@ var (
 	testKeys  = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	testKeysB = getKeysB(testKeys)
 	testVal   = []byte("Hello!")
+
+	tmpPath string
 )
 
 func getKeysB(keys []string) (out [][]byte) {
@@ -32,12 +36,19 @@ func getKeysB(keys []string) (out [][]byte) {
 func TestMain(m *testing.M) {
 	var err error
 
-	if db, err = New("./", "test"); err != nil {
+	if tmpPath, err = ioutil.TempDir("", "hippy_testing_"); err != nil {
+		fmt.Println("Error getting temp dir:", err)
+		return
+	}
+
+	tmpPath = "testing"
+
+	if db, err = New(tmpPath, "test"); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
 
-	if bdb, err = bolt.Open("test.bdb", 0644, nil); err != nil {
+	if bdb, err = bolt.Open(filepath.Join(tmpPath, "test.bdb"), 0644, nil); err != nil {
 		fmt.Println("Error opening:", err)
 	}
 
@@ -52,9 +63,11 @@ func TestMain(m *testing.M) {
 
 	sts := m.Run()
 	bdb.Close()
-	if err = db.Close(); err != nil {
-		fmt.Println("Error closing hippy:", err)
-	}
+	//	if err = db.Close(); err != nil {
+	//		fmt.Println("Error closing hippy:", err)
+	//	}
+
+	//	os.RemoveAll(tmpPath)
 	os.Exit(sts)
 }
 
@@ -64,15 +77,28 @@ func TestBasic(t *testing.T) {
 		err error
 	)
 
-	if db, err = New("./", "basic_test"); err != nil {
+	if db, err = New(tmpPath, "basic_test"); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
 
 	hippyRW(db, 1)
-
 	db.Close()
-	//	os.Remove("basic_test.db")
+}
+
+func TestMWBasic(t *testing.T) {
+	var (
+		db  *Hippy
+		err error
+	)
+
+	if db, err = New(tmpPath, "basicMW_test", GZipMW{}); err != nil {
+		fmt.Println("Error opening:", err)
+		return
+	}
+
+	hippyRW(db, 1)
+	fmt.Println(db.Close())
 }
 
 func TestMedium(t *testing.T) {
@@ -83,7 +109,7 @@ func TestMedium(t *testing.T) {
 		err error
 	)
 
-	if db, err = New("./", "medium_test"); err != nil {
+	if db, err = New(tmpPath, "medium_test"); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -92,7 +118,7 @@ func TestMedium(t *testing.T) {
 		b, ok = txn.Get("greeting")
 		//	fmt.Println(string(b), ok)
 
-		txn.Put("greeting", []byte("Hello!"))
+		txn.Put("greeting", []byte(`Hello!`))
 		b, ok = txn.Get("greeting")
 		return
 	})

@@ -100,6 +100,9 @@ func (h *Hippy) replay() (err error) {
 		rdr = h.f
 	} else {
 		if rdr, err = newMWReader(h.f, h.mws); err != nil {
+			if err == io.EOF {
+				err = nil
+			}
 			goto END
 		}
 	}
@@ -112,6 +115,7 @@ func (h *Hippy) replay() (err error) {
 			if err == ErrHashLine {
 				de = true
 			}
+
 			continue
 		}
 
@@ -134,11 +138,24 @@ func (h *Hippy) replay() (err error) {
 		rdr.Close()
 	}
 
+END:
 	if !de {
-		h.f.Write(newHashLine())
+		if !hasMW {
+			h.f.Write(newHashLine())
+		} else {
+			var w io.WriteCloser
+			if w, err = newMWWriter(h.f, h.mws); err != nil {
+				goto END
+			}
+
+			hl := newHashLine()
+			w.Write(hl)
+			w.Close()
+		}
+
+		h.f.Sync()
 	}
 
-END:
 	h.mux.Unlock()
 	return
 }
@@ -192,6 +209,9 @@ func (h *Hippy) compact() (err error) {
 		fi    os.FileInfo
 		hash  []byte
 
+		tmpW  io.WriteCloser
+		hasMW = len(h.mws) > 0
+
 		fLoc = filepath.Join(h.path, h.name+".hdb")         // Main file location
 		aLoc = filepath.Join(h.path, h.name+".archive.hdb") // Archive file location
 		tLoc = filepath.Join(h.path, h.name+".tmp.hdb")     // Temporary file location
@@ -207,13 +227,21 @@ func (h *Hippy) compact() (err error) {
 		goto END
 	}
 
-	if hash, err = archive(h.f, archv); err != nil {
+	if !hasMW {
+		tmpW = tmp
+	} else {
+		if tmpW, err = newMWWriter(tmp, h.mws); err != nil {
+			goto END
+		}
+	}
+
+	if hash, err = archive(h.f, archv, h.mws); err != nil {
 		goto END
 	}
 
 	// Write data contents to tmp file
 	for k, v := range h.s {
-		if _, err = tmp.Write(newLogLine(k, _put, v)); err != nil {
+		if _, err = tmpW.Write(newLogLine(k, _put, v)); err != nil {
 			goto END
 		}
 	}
@@ -223,8 +251,12 @@ func (h *Hippy) compact() (err error) {
 	}
 
 	// Add our current hash to the end
-	if _, err = tmp.Write(hash); err != nil {
+	if _, err = tmpW.Write(hash); err != nil {
 		goto END
+	}
+
+	if hasMW {
+		tmpW.Close()
 	}
 
 	if err = tmp.Close(); err != nil {

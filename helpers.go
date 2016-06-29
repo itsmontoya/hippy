@@ -2,6 +2,7 @@ package hippy
 
 import (
 	"bufio"
+	"io"
 	"os"
 
 	"github.com/missionMeteora/uuid"
@@ -55,13 +56,12 @@ END:
 }
 
 func newHashLine() (out []byte) {
-	u := uuid.New()
-
 	// Out is the length of a UUID (16), our prefix '# ' (2), and our suffix (Newline, 1)
 	out = make([]byte, 19)
 	out[0] = _pound
 	out[1] = _space
-	copy(out[2:], u[:])
+	copy(out[2:], []byte(uuid.New().String()))
+
 	out[18] = _newline
 	return
 }
@@ -116,17 +116,34 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 	return
 }
 
-func archive(in, out *os.File) (hash []byte, err error) {
+func archive(in, out *os.File, mws []Middleware) (hash []byte, err error) {
 	var (
 		cu bool // Caught up boolean
 		b  []byte
 
-		nl = []byte{_newline}
+		wc   io.WriteCloser
+		rc   io.ReadCloser
+		scnr *bufio.Scanner
+
+		hasMW = len(mws) > 0
+		nl    = []byte{_newline}
 	)
 
 	in.Seek(0, 0)
-	scnr := bufio.NewScanner(in)
+	if !hasMW {
+		wc = out
+		rc = in
+	} else {
+		if wc, err = newMWWriter(out, mws); err != nil {
+			return
+		}
 
+		if rc, err = newMWReader(in, mws); err != nil {
+			return
+		}
+	}
+
+	scnr = bufio.NewScanner(rc)
 	// For each line..
 	for scnr.Scan() {
 		b = scnr.Bytes()
@@ -143,20 +160,26 @@ func archive(in, out *os.File) (hash []byte, err error) {
 			continue
 		}
 
-		if cu {
-			break
+		if !cu {
+			continue
 		}
 
-		_, err = out.Write(b)
-		out.Write(nl)
+		_, err = wc.Write(b)
+		wc.Write(nl)
 	}
 
 	if !cu {
 		err = ErrHashNotFound
-		return
+		goto END
 	}
 
 	hash = newHashLine()
-	out.Write(hash)
+	wc.Write(hash)
+
+END:
+	if hasMW {
+		rc.Close()
+		wc.Close()
+	}
 	return
 }
