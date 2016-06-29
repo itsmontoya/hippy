@@ -117,6 +117,10 @@ func (g GZipMW) Writer(w io.Writer) (io.WriteCloser, error) {
 }
 
 // Reader returns a new gzip reader
-func (g GZipMW) Reader(r io.Reader) (io.ReadCloser, error) {
-	return gzip.NewReader(r)
+func (g GZipMW) Reader(r io.Reader) (rc io.ReadCloser, err error) {
+	if rc, err = gzip.NewReader(r); err != nil {
+		rc = nil
+	}
+
+	return
 }

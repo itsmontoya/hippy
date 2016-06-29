@@ -2,7 +2,6 @@ package hippy
 
 import (
 	"bufio"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,8 +10,9 @@ import (
 const (
 	_none byte = iota
 
-	_put // Byte representing a PUT action
-	_del // Byte representing a DELETE action
+	_put  // Byte representing a PUT action
+	_del  // Byte representing a DELETE action
+	_hash // Hash line
 
 	_separator = ':'  // Separator used to split key and value
 	_newline   = '\n' // Character for newline
@@ -35,6 +35,9 @@ const (
 
 	// ErrIsClosed is returned when an action is attempted on a closed instance
 	ErrIsClosed = Error("cannot perform action on closed instance")
+
+	// ErrIsOpen is returned when an instance is attempted to be re-opened when it's already active
+	ErrIsOpen = Error("cannot open an instance which is already open")
 )
 
 // New returns a new Hippy
@@ -49,7 +52,7 @@ func New(path, name string, mws ...Middleware) (h *Hippy, err error) {
 	}
 
 	// Open persistance file
-	if hip.f, err = os.OpenFile(filepath.Join(path, name+".hdb"), os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644); err != nil {
+	if hip.f, err = newFile(path, name, mws); err != nil {
 		return
 	}
 
@@ -68,16 +71,16 @@ func New(path, name string, mws ...Middleware) (h *Hippy, err error) {
 type Hippy struct {
 	mux sync.RWMutex
 
-	s storage  // In-memory storage
-	f *os.File // Persistant storage
+	s storage // In-memory storage
+	f *file   //Persistent storage
 
 	rtxp  sync.Pool // Read transaction pool
 	wtxp  sync.Pool // Write transaction pool
 	rwtxp sync.Pool // Read/Write transaction pool
 
-	path string       // Database path
-	name string       // Database name
-	mws  []Middleware // Middlewares
+	path string // Database path
+	name string // Database name
+	mws  []Middleware
 
 	closed bool // Closed state
 }
@@ -88,39 +91,23 @@ func (h *Hippy) replay() (err error) {
 		key string
 		val []byte
 		de  bool // Data exists boolean
-
-		rdr  io.ReadCloser
-		scnr *bufio.Scanner
-
-		hasMW = len(h.mws) > 0
 	)
 
 	h.mux.Lock()
-	if !hasMW {
-		rdr = h.f
-	} else {
-		if rdr, err = newMWReader(h.f, h.mws); err != nil {
-			if err == io.EOF {
-				err = nil
-			}
-			goto END
-		}
-	}
+	// Set scanner to find each line
+	scnr := bufio.NewScanner(h.f)
 
-	scnr = bufio.NewScanner(rdr)
 	// For each line..
 	for scnr.Scan() {
 		// Parse action, key, and value
 		if a, key, val, err = parseLogLine(scnr.Bytes()); err != nil {
-			if err == ErrHashLine {
-				de = true
-			}
-
 			continue
 		}
 
 		// Fulfill action
 		switch a {
+		case _hash:
+			de = true
 		case _put:
 			// Put value by key
 			h.s[key] = val
@@ -133,29 +120,14 @@ func (h *Hippy) replay() (err error) {
 		de = true
 	}
 
-	if hasMW {
-		// We only close our reader if it's a middleware reader
-		rdr.Close()
+	if de {
+		goto END
 	}
+
+	h.f.Write(newHashLine())
+	h.f.Flush()
 
 END:
-	if !de {
-		if !hasMW {
-			h.f.Write(newHashLine())
-		} else {
-			var w io.WriteCloser
-			if w, err = newMWWriter(h.f, h.mws); err != nil {
-				goto END
-			}
-
-			hl := newHashLine()
-			w.Write(hl)
-			w.Close()
-		}
-
-		h.f.Sync()
-	}
-
 	h.mux.Unlock()
 	return
 }
@@ -163,22 +135,9 @@ END:
 // write will write a transaction to disk
 // Note: This is not thread safe. It is expected that the calling function is managing locks
 func (h *Hippy) write(a map[string]action) (err error) {
-	var (
-		w     io.WriteCloser
-		hasMW = len(h.mws) > 0
-	)
-
-	if !hasMW {
-		w = h.f
-	} else {
-		if w, err = newMWWriter(h.f, h.mws); err != nil {
-			return
-		}
-	}
-
 	for k, v := range a {
 		// We are going to write before modifying memory
-		if _, err = w.Write(newLogLine(k, v.a, v.b)); err != nil {
+		if _, err = h.f.Write(newLogLine(k, v.a, v.b)); err != nil {
 			return
 		}
 
@@ -193,46 +152,28 @@ func (h *Hippy) write(a map[string]action) (err error) {
 		}
 	}
 
-	if hasMW {
-		// We only close our writer if it's a middleware writer
-		w.Close()
-	}
-
 	// Call sync to make sure the data has flushed to disk
-	return h.f.Sync()
+	return h.f.Flush()
 }
 
 func (h *Hippy) compact() (err error) {
 	var (
-		archv *os.File
-		tmp   *os.File
-		fi    os.FileInfo
+		archv *file
+		tmp   *file
 		hash  []byte
 
-		tmpW  io.WriteCloser
-		hasMW = len(h.mws) > 0
-
-		fLoc = filepath.Join(h.path, h.name+".hdb")         // Main file location
-		aLoc = filepath.Join(h.path, h.name+".archive.hdb") // Archive file location
-		tLoc = filepath.Join(h.path, h.name+".tmp.hdb")     // Temporary file location
+		fLoc = filepath.Join(h.path, h.name+".hdb")     // Main file location
+		tLoc = filepath.Join(h.path, h.name+".tmp.hdb") // Temporary file location
 	)
 
 	h.mux.Lock()
 	// Open archive file
-	if archv, err = os.OpenFile(aLoc, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err != nil {
+	if archv, err = newFile(h.path, h.name+".archive", h.mws); err != nil {
 		goto END
 	}
 
-	if tmp, err = os.OpenFile(tLoc, os.O_CREATE|os.O_RDWR, 0644); err != nil {
+	if tmp, err = newFile(h.path, h.name+".tmp", h.mws); err != nil {
 		goto END
-	}
-
-	if !hasMW {
-		tmpW = tmp
-	} else {
-		if tmpW, err = newMWWriter(tmp, h.mws); err != nil {
-			goto END
-		}
 	}
 
 	if hash, err = archive(h.f, archv, h.mws); err != nil {
@@ -241,7 +182,7 @@ func (h *Hippy) compact() (err error) {
 
 	// Write data contents to tmp file
 	for k, v := range h.s {
-		if _, err = tmpW.Write(newLogLine(k, _put, v)); err != nil {
+		if _, err = tmp.Write(newLogLine(k, _put, v)); err != nil {
 			goto END
 		}
 	}
@@ -251,12 +192,8 @@ func (h *Hippy) compact() (err error) {
 	}
 
 	// Add our current hash to the end
-	if _, err = tmpW.Write(hash); err != nil {
+	if _, err = tmp.Write(hash); err != nil {
 		goto END
-	}
-
-	if hasMW {
-		tmpW.Close()
 	}
 
 	if err = tmp.Close(); err != nil {
@@ -269,16 +206,11 @@ func (h *Hippy) compact() (err error) {
 
 	err = os.Rename(tLoc, fLoc)
 
-	// Open persistance file
-	if h.f, err = os.OpenFile(fLoc, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644); err != nil {
+	if err = h.f.SetFile(); err != nil {
 		goto END
 	}
 
-	if fi, err = h.f.Stat(); err != nil {
-		goto END
-	}
-
-	h.f.Seek(fi.Size(), 0)
+	err = h.f.SeekToEnd()
 
 END:
 	h.mux.Unlock()

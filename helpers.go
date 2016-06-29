@@ -2,8 +2,6 @@ package hippy
 
 import (
 	"bufio"
-	"io"
-	"os"
 
 	"github.com/missionMeteora/uuid"
 )
@@ -68,9 +66,15 @@ func newHashLine() (out []byte) {
 
 // parseLogLine will return an action, key, and body from a provided log line (in the form of a byte slice)
 func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
+	var (
+		keyB []byte
+		i    = 1
+	)
+
 	if b[0] == _pound && b[1] == _space {
-		err = ErrHashLine
-		return
+		a = _hash
+		i++
+		goto END
 	}
 
 	// Action is the first index
@@ -84,11 +88,6 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 		err = ErrInvalidAction
 		return
 	}
-
-	var (
-		keyB []byte
-		i    = 1
-	)
 
 	// Iterate through the inbound byteslice
 	for ; i < len(b); i++ {
@@ -107,6 +106,7 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 		return
 	}
 
+END:
 	// Set key
 	key = string(keyB)
 	// Pre-allocate body as the length of the inbound byteslice minus the current index
@@ -116,45 +116,28 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 	return
 }
 
-func archive(in, out *os.File, mws []Middleware) (hash []byte, err error) {
+func archive(in, out *file, mws []Middleware) (hash []byte, err error) {
 	var (
 		cu bool // Caught up boolean
 		b  []byte
 
-		wc   io.WriteCloser
-		rc   io.ReadCloser
 		scnr *bufio.Scanner
-
-		hasMW = len(mws) > 0
-		nl    = []byte{_newline}
+		nl   = []byte{_newline}
 	)
 
-	in.Seek(0, 0)
-	if !hasMW {
-		wc = out
-		rc = in
-	} else {
-		if wc, err = newMWWriter(out, mws); err != nil {
-			return
-		}
+	in.SeekToStart()
+	scnr = bufio.NewScanner(in)
 
-		if rc, err = newMWReader(in, mws); err != nil {
-			return
-		}
-	}
-
-	scnr = bufio.NewScanner(rc)
 	// For each line..
 	for scnr.Scan() {
 		b = scnr.Bytes()
 		// Parse action, key, and value
-		_, _, _, err = parseLogLine(b)
+		a, _, _, _ := parseLogLine(b)
 
-		switch err {
-		case nil:
-		case ErrHashLine:
+		switch a {
+		case _put, _del:
+		case _hash:
 			cu = true
-			err = nil
 			continue
 		default:
 			continue
@@ -164,22 +147,27 @@ func archive(in, out *os.File, mws []Middleware) (hash []byte, err error) {
 			continue
 		}
 
-		_, err = wc.Write(b)
-		wc.Write(nl)
+		// TODO: Switch this section out with an io.Copy
+		if _, err = out.Write(b); err != nil {
+			return
+		}
+
+		if _, err = out.Write(nl); err != nil {
+			return
+		}
+		// TODO END
 	}
 
 	if !cu {
 		err = ErrHashNotFound
-		goto END
+		return
 	}
 
 	hash = newHashLine()
-	wc.Write(hash)
-
-END:
-	if hasMW {
-		rc.Close()
-		wc.Close()
+	if _, err = out.Write(hash); err != nil {
+		return
 	}
+
+	err = out.Flush()
 	return
 }
