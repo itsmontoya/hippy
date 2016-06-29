@@ -13,7 +13,6 @@ type action struct {
 	b []byte
 }
 
-// storage is the internal store for Hippy
 type storage map[string][]byte
 
 // Error is a simple error type which is able to be stored as a const, rather than a global var
@@ -129,7 +128,7 @@ func archive(in, out *os.File) (hash []byte, err error) {
 	scnr := bufio.NewScanner(in)
 
 	// For each line..
-	for err == nil && scnr.Scan() {
+	for scnr.Scan() {
 		b = scnr.Bytes()
 		// Parse action, key, and value
 		_, _, _, err = parseLogLine(b)
@@ -144,8 +143,8 @@ func archive(in, out *os.File) (hash []byte, err error) {
 			continue
 		}
 
-		if !cu {
-			continue
+		if cu {
+			break
 		}
 
 		_, err = out.Write(b)

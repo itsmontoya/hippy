@@ -60,13 +60,30 @@ func TestMain(m *testing.M) {
 
 func TestBasic(t *testing.T) {
 	var (
+		db  *Hippy
+		err error
+	)
+
+	if db, err = New("./", "basic_test"); err != nil {
+		fmt.Println("Error opening:", err)
+		return
+	}
+
+	hippyRW(db, 1)
+
+	db.Close()
+	//	os.Remove("basic_test.db")
+}
+
+func TestMedium(t *testing.T) {
+	var (
 		b   []byte
 		ok  bool
 		db  *Hippy
 		err error
 	)
 
-	if db, err = New("./", "basic_test"); err != nil {
+	if db, err = New("./", "medium_test"); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -110,7 +127,8 @@ func TestBasic(t *testing.T) {
 		return
 	})
 
-	os.Remove("basic_test.db")
+	db.Close()
+	//	os.Remove("basic_test.db")
 }
 
 func BenchmarkShortHippy(b *testing.B) {

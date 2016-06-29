@@ -2,6 +2,7 @@ package hippy
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,13 +38,14 @@ const (
 )
 
 // New returns a new Hippy
-func New(path, name string) (h *Hippy, err error) {
+func New(path, name string, mws ...Middleware) (h *Hippy, err error) {
 	hip := Hippy{
 		// Make the internal storage map, it would be a shame to panic on put!
 		s: make(storage),
 
 		path: path,
 		name: name,
+		mws:  mws,
 	}
 
 	// Open persistance file
@@ -73,23 +75,36 @@ type Hippy struct {
 	wtxp  sync.Pool // Write transaction pool
 	rwtxp sync.Pool // Read/Write transaction pool
 
-	path string // Database path
-	name string // Database name
+	path string       // Database path
+	name string       // Database name
+	mws  []Middleware // Middlewares
 
 	closed bool // Closed state
 }
 
-func (h *Hippy) replay() {
+func (h *Hippy) replay() (err error) {
 	var (
 		a   byte
 		key string
 		val []byte
-		err error
 		de  bool // Data exists boolean
+
+		rdr  io.ReadCloser
+		scnr *bufio.Scanner
+
+		hasMW = len(h.mws) > 0
 	)
 
 	h.mux.Lock()
-	scnr := bufio.NewScanner(h.f)
+	if !hasMW {
+		rdr = h.f
+	} else {
+		if rdr, err = newMWReader(h.f, h.mws); err != nil {
+			goto END
+		}
+	}
+
+	scnr = bufio.NewScanner(rdr)
 	// For each line..
 	for scnr.Scan() {
 		// Parse action, key, and value
@@ -114,17 +129,39 @@ func (h *Hippy) replay() {
 		de = true
 	}
 
+	if hasMW {
+		// We only close our reader if it's a middleware reader
+		rdr.Close()
+	}
+
 	if !de {
 		h.f.Write(newHashLine())
 	}
 
+END:
 	h.mux.Unlock()
+	return
 }
 
+// write will write a transaction to disk
+// Note: This is not thread safe. It is expected that the calling function is managing locks
 func (h *Hippy) write(a map[string]action) (err error) {
+	var (
+		w     io.WriteCloser
+		hasMW = len(h.mws) > 0
+	)
+
+	if !hasMW {
+		w = h.f
+	} else {
+		if w, err = newMWWriter(h.f, h.mws); err != nil {
+			return
+		}
+	}
+
 	for k, v := range a {
 		// We are going to write before modifying memory
-		if _, err = h.f.Write(newLogLine(k, v.a, v.b)); err != nil {
+		if _, err = w.Write(newLogLine(k, v.a, v.b)); err != nil {
 			return
 		}
 
@@ -137,6 +174,11 @@ func (h *Hippy) write(a map[string]action) (err error) {
 			// Delete by key
 			delete(h.s, k)
 		}
+	}
+
+	if hasMW {
+		// We only close our writer if it's a middleware writer
+		w.Close()
 	}
 
 	// Call sync to make sure the data has flushed to disk
