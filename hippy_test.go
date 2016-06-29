@@ -32,7 +32,7 @@ func getKeysB(keys []string) (out [][]byte) {
 func TestMain(m *testing.M) {
 	var err error
 
-	if db, err = New("test.db"); err != nil {
+	if db, err = New("./", "test"); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -52,6 +52,9 @@ func TestMain(m *testing.M) {
 
 	sts := m.Run()
 	bdb.Close()
+	if err = db.Close(); err != nil {
+		fmt.Println("Error closing hippy:", err)
+	}
 	os.Exit(sts)
 }
 
@@ -63,7 +66,7 @@ func TestBasic(t *testing.T) {
 		err error
 	)
 
-	if db, err = New("basic_test.db"); err != nil {
+	if db, err = New("./", "basic_test"); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}

@@ -2,8 +2,8 @@ package hippy
 
 import (
 	"bufio"
-	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -15,25 +15,39 @@ const (
 
 	_separator = ':'  // Separator used to split key and value
 	_newline   = '\n' // Character for newline
+	_pound     = '#'  // Character for pound
+	_space     = ' '  // Character for space
 )
 
-var (
+const (
 	// ErrInvalidAction is returned when an invalid action occurs
-	ErrInvalidAction = errors.New("invalid action")
+	ErrInvalidAction = Error("invalid action")
 
 	// ErrInvalidKey is returned when an invalid key is provided
-	ErrInvalidKey = errors.New("invalid key")
+	ErrInvalidKey = Error("invalid key")
+
+	// ErrHashLine is returned when a hash line is parsed as a log line
+	ErrHashLine = Error("cannot parse hash line as log line")
+
+	// ErrHashNotFound is returned when a hash line is not found while archiving
+	ErrHashNotFound = Error("hash not found")
+
+	// ErrIsClosed is returned when an action is attempted on a closed instance
+	ErrIsClosed = Error("cannot perform action on closed instance")
 )
 
 // New returns a new Hippy
-func New(loc string) (h *Hippy, err error) {
+func New(path, name string) (h *Hippy, err error) {
 	hip := Hippy{
 		// Make the internal storage map, it would be a shame to panic on put!
 		s: make(storage),
+
+		path: path,
+		name: name,
 	}
 
 	// Open persistance file
-	if hip.f, err = os.OpenFile(loc, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644); err != nil {
+	if hip.f, err = os.OpenFile(filepath.Join(path, name+".hdb"), os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644); err != nil {
 		return
 	}
 
@@ -59,6 +73,9 @@ type Hippy struct {
 	wtxp  sync.Pool // Write transaction pool
 	rwtxp sync.Pool // Read/Write transaction pool
 
+	path string // Database path
+	name string // Database name
+
 	closed bool // Closed state
 }
 
@@ -68,6 +85,7 @@ func (h *Hippy) replay() {
 		key string
 		val []byte
 		err error
+		de  bool // Data exists boolean
 	)
 
 	h.mux.Lock()
@@ -76,6 +94,9 @@ func (h *Hippy) replay() {
 	for scnr.Scan() {
 		// Parse action, key, and value
 		if a, key, val, err = parseLogLine(scnr.Bytes()); err != nil {
+			if err == ErrHashLine {
+				de = true
+			}
 			continue
 		}
 
@@ -88,7 +109,15 @@ func (h *Hippy) replay() {
 			// Delete by key
 			delete(h.s, key)
 		}
+
+		// We know data exists, let's set de to true
+		de = true
 	}
+
+	if !de {
+		h.f.Write(newHashLine())
+	}
+
 	h.mux.Unlock()
 }
 
@@ -112,6 +141,74 @@ func (h *Hippy) write(a map[string]action) (err error) {
 
 	// Call sync to make sure the data has flushed to disk
 	return h.f.Sync()
+}
+
+func (h *Hippy) compact() (err error) {
+	var (
+		archv *os.File
+		tmp   *os.File
+		fi    os.FileInfo
+		hash  []byte
+
+		fLoc = filepath.Join(h.path, h.name+".hdb")         // Main file location
+		aLoc = filepath.Join(h.path, h.name+".archive.hdb") // Archive file location
+		tLoc = filepath.Join(h.path, h.name+".tmp.hdb")     // Temporary file location
+	)
+
+	h.mux.Lock()
+	// Open archive file
+	if archv, err = os.OpenFile(aLoc, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err != nil {
+		goto END
+	}
+
+	if tmp, err = os.OpenFile(tLoc, os.O_CREATE|os.O_RDWR, 0644); err != nil {
+		goto END
+	}
+
+	if hash, err = archive(h.f, archv); err != nil {
+		goto END
+	}
+
+	// Write data contents to tmp file
+	for k, v := range h.s {
+		if _, err = tmp.Write(newLogLine(k, _put, v)); err != nil {
+			goto END
+		}
+	}
+
+	if err = archv.Close(); err != nil {
+		goto END
+	}
+
+	// Add our current hash to the end
+	if _, err = tmp.Write(hash); err != nil {
+		goto END
+	}
+
+	if err = tmp.Close(); err != nil {
+		goto END
+	}
+
+	if err = h.f.Close(); err != nil {
+		goto END
+	}
+
+	err = os.Rename(tLoc, fLoc)
+
+	// Open persistance file
+	if h.f, err = os.OpenFile(fLoc, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644); err != nil {
+		goto END
+	}
+
+	if fi, err = h.f.Stat(); err != nil {
+		goto END
+	}
+
+	h.f.Seek(fi.Size(), 0)
+
+END:
+	h.mux.Unlock()
+	return
 }
 
 // newReadTx returns a new read transaction, used by read transaction pool
@@ -181,7 +278,11 @@ func (h *Hippy) Read(fn func(*ReadTx) error) (err error) {
 	tx := h.getReadTx()
 
 	h.mux.RLock()
-	err = fn(tx)
+	if h.closed {
+		err = ErrIsClosed
+	} else {
+		err = fn(tx)
+	}
 	h.mux.RUnlock()
 
 	// Return read transaction to the pool
@@ -195,11 +296,17 @@ func (h *Hippy) ReadWrite(fn func(*ReadWriteTx) error) (err error) {
 	tx := h.getReadWriteTx()
 
 	h.mux.Lock()
+	if h.closed {
+		err = ErrIsClosed
+		goto END
+	}
+
 	if err = fn(tx); err == nil {
 		err = h.write(tx.a)
 	}
-	h.mux.Unlock()
 
+END:
+	h.mux.Unlock()
 	// Return read/write transaction to the pool
 	h.putReadWriteTx(tx)
 	return
@@ -211,12 +318,35 @@ func (h *Hippy) Write(fn func(*WriteTx) error) (err error) {
 	tx := h.getWriteTx()
 
 	h.mux.Lock()
+	if h.closed {
+		err = ErrIsClosed
+		goto END
+	}
+
 	if err = fn(tx); err == nil {
 		err = h.write(tx.a)
 	}
-	h.mux.Unlock()
 
+END:
+	h.mux.Unlock()
 	// Return write transaction to the pool
 	h.putWriteTx(tx)
 	return
+}
+
+// Close will close Hippyh
+func (h *Hippy) Close() (err error) {
+	h.mux.Lock()
+	if h.closed {
+		err = ErrIsClosed
+	} else {
+		h.closed = true
+	}
+	h.mux.Unlock()
+
+	if err != nil {
+		return
+	}
+
+	return h.compact()
 }

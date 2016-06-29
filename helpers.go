@@ -1,5 +1,12 @@
 package hippy
 
+import (
+	"bufio"
+	"os"
+
+	"github.com/missionMeteora/uuid"
+)
+
 // action stores the action-type and body for a transaction item
 type action struct {
 	a byte
@@ -8,6 +15,14 @@ type action struct {
 
 // storage is the internal store for Hippy
 type storage map[string][]byte
+
+// Error is a simple error type which is able to be stored as a const, rather than a global var
+type Error string
+
+// Error fulfills the interface requirements for an error
+func (e Error) Error() string {
+	return string(e)
+}
 
 // newLogLine will return a new log line given a provided key, action, and body
 func newLogLine(key string, a byte, b []byte) (out []byte) {
@@ -40,8 +55,25 @@ END:
 	return
 }
 
+func newHashLine() (out []byte) {
+	u := uuid.New()
+
+	// Out is the length of a UUID (16), our prefix '# ' (2), and our suffix (Newline, 1)
+	out = make([]byte, 19)
+	out[0] = _pound
+	out[1] = _space
+	copy(out[2:], u[:])
+	out[18] = _newline
+	return
+}
+
 // parseLogLine will return an action, key, and body from a provided log line (in the form of a byte slice)
 func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
+	if b[0] == _pound && b[1] == _space {
+		err = ErrHashLine
+		return
+	}
+
 	// Action is the first index
 	a = b[0]
 
@@ -82,5 +114,50 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 	body = make([]byte, len(b)-i)
 	// Copy inbound slice (from the current index to the end) to body
 	copy(body, b[i:])
+	return
+}
+
+func archive(in, out *os.File) (hash []byte, err error) {
+	var (
+		cu bool // Caught up boolean
+		b  []byte
+
+		nl = []byte{_newline}
+	)
+
+	in.Seek(0, 0)
+	scnr := bufio.NewScanner(in)
+
+	// For each line..
+	for err == nil && scnr.Scan() {
+		b = scnr.Bytes()
+		// Parse action, key, and value
+		_, _, _, err = parseLogLine(b)
+
+		switch err {
+		case nil:
+		case ErrHashLine:
+			cu = true
+			err = nil
+			continue
+		default:
+			continue
+		}
+
+		if !cu {
+			continue
+		}
+
+		_, err = out.Write(b)
+		out.Write(nl)
+	}
+
+	if !cu {
+		err = ErrHashNotFound
+		return
+	}
+
+	hash = newHashLine()
+	out.Write(hash)
 	return
 }
