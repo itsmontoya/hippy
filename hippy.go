@@ -41,7 +41,7 @@ const (
 )
 
 // New returns a new Hippy
-func New(path, name string, mws ...Middleware) (h *Hippy, err error) {
+func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) {
 	hip := Hippy{
 		// Make the internal storage map, it would be a shame to panic on put!
 		s: make(storage),
@@ -49,6 +49,7 @@ func New(path, name string, mws ...Middleware) (h *Hippy, err error) {
 		path: path,
 		name: name,
 		mws:  mws,
+		opts: opts,
 	}
 
 	// Open persistance file
@@ -81,6 +82,7 @@ type Hippy struct {
 	path string // Database path
 	name string // Database name
 	mws  []Middleware
+	opts Opts
 
 	closed bool // Closed state
 }
@@ -107,7 +109,6 @@ func (h *Hippy) replay() (err error) {
 		// Fulfill action
 		switch a {
 		case _hash:
-			de = true
 		case _put:
 			// Put value by key
 			h.s[key] = val
@@ -219,7 +220,7 @@ END:
 
 // newReadTx returns a new read transaction, used by read transaction pool
 func (h *Hippy) newReadTx() *ReadTx {
-	return &ReadTx{&h.s}
+	return &ReadTx{h}
 }
 
 // newWriteTx returns a new write transaction, used by write transaction pool
@@ -232,7 +233,7 @@ func (h *Hippy) newWriteTx() *WriteTx {
 // newReadWriteTx returns a new read/write transaction, used by read/write transaction pool
 func (h *Hippy) newReadWriteTx() *ReadWriteTx {
 	return &ReadWriteTx{
-		s: &h.s,
+		h: h,
 		a: make(map[string]action),
 	}
 }

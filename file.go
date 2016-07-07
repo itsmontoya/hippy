@@ -110,18 +110,15 @@ func (f *file) Flush() (err error) {
 		return ErrIsClosed
 	}
 
-	if f.hasMW {
-		if f.mww != nil {
-			f.mww.Close()
-			f.mww = nil
-		}
-
-		if f.mwr != nil {
-			f.mwr.Close()
-			f.mwr = nil
-		}
+	if f.mww != nil {
+		f.mww.Close()
+		f.mww = nil
 	}
 
+	if f.mwr != nil {
+		f.mwr.Close()
+		f.mwr = nil
+	}
 	return f.f.Sync()
 }
 

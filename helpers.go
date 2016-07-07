@@ -2,6 +2,7 @@ package hippy
 
 import (
 	"bufio"
+	"encoding/base64"
 
 	"github.com/missionMeteora/uuid"
 )
@@ -24,6 +25,8 @@ func (e Error) Error() string {
 
 // newLogLine will return a new log line given a provided key, action, and body
 func newLogLine(key string, a byte, b []byte) (out []byte) {
+	var b64B []byte
+
 	// Pre-allocate the slice to the size of the sum:
 	//	- Length of key
 	//	- Length of body
@@ -32,9 +35,11 @@ func newLogLine(key string, a byte, b []byte) (out []byte) {
 
 	// Append action
 	out = append(out, byte(a))
+	b64B = make([]byte, base64.StdEncoding.EncodedLen(len(key)))
+	base64.StdEncoding.Encode(b64B, []byte(key))
 
 	// Append key
-	out = append(out, key...)
+	out = append(out, b64B...)
 
 	// If action is DELETE, we don't need to append the separator and value, goto the end
 	if a == _del {
@@ -45,7 +50,9 @@ func newLogLine(key string, a byte, b []byte) (out []byte) {
 	out = append(out, _separator)
 
 	// Append body
-	out = append(out, b...)
+	b64B = make([]byte, base64.StdEncoding.EncodedLen(len(b)))
+	base64.StdEncoding.Encode(b64B, b)
+	out = append(out, b64B...)
 
 END:
 	// Lastly, append a newline before returning
@@ -93,7 +100,7 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 	for ; i < len(b); i++ {
 		// We have reached the separator, break out of loop. It's time to get the body!
 		if b[i] == _separator {
-			i++ // Increment tomove past the _separator
+			i++ // Increment to move past the _separator
 			break
 		}
 
@@ -108,11 +115,28 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 
 END:
 	// Set key
+	if keyB, err = decodeBase64(keyB); err != nil {
+		return
+	}
 	key = string(keyB)
+
 	// Pre-allocate body as the length of the inbound byteslice minus the current index
-	body = make([]byte, len(b)-i)
-	// Copy inbound slice (from the current index to the end) to body
-	copy(body, b[i:])
+	if body, err = decodeBase64(b[i:]); err != nil {
+		return
+	}
+
+	return
+}
+
+func decodeBase64(in []byte) (out []byte, err error) {
+	var n int
+
+	out = make([]byte, base64.StdEncoding.DecodedLen(len(in)))
+	if n, err = base64.StdEncoding.Decode(out, in); err != nil {
+		return
+	}
+
+	out = out[:n]
 	return
 }
 

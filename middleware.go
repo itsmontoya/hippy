@@ -47,7 +47,6 @@ func (w *mwWriter) Close() (err error) {
 	if w.closed {
 		return ErrIsClosed
 	}
-
 	w.closed = true
 
 	for _, wc := range w.wcs {
