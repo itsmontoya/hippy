@@ -25,8 +25,6 @@ func (e Error) Error() string {
 
 // newLogLine will return a new log line given a provided key, action, and body
 func newLogLine(key string, a byte, b []byte) (out []byte) {
-	var b64B []byte
-
 	// Pre-allocate the slice to the size of the sum:
 	//	- Length of key
 	//	- Length of body
@@ -35,11 +33,9 @@ func newLogLine(key string, a byte, b []byte) (out []byte) {
 
 	// Append action
 	out = append(out, byte(a))
-	b64B = make([]byte, base64.StdEncoding.EncodedLen(len(key)))
-	base64.StdEncoding.Encode(b64B, []byte(key))
 
 	// Append key
-	out = append(out, b64B...)
+	out = append(out, encodeBase64([]byte(key))...)
 
 	// If action is DELETE, we don't need to append the separator and value, goto the end
 	if a == _del {
@@ -50,9 +46,7 @@ func newLogLine(key string, a byte, b []byte) (out []byte) {
 	out = append(out, _separator)
 
 	// Append body
-	b64B = make([]byte, base64.StdEncoding.EncodedLen(len(b)))
-	base64.StdEncoding.Encode(b64B, b)
-	out = append(out, b64B...)
+	out = append(out, encodeBase64(b)...)
 
 END:
 	// Lastly, append a newline before returning
@@ -128,18 +122,6 @@ END:
 	return
 }
 
-func decodeBase64(in []byte) (out []byte, err error) {
-	var n int
-
-	out = make([]byte, base64.StdEncoding.DecodedLen(len(in)))
-	if n, err = base64.StdEncoding.Decode(out, in); err != nil {
-		return
-	}
-
-	out = out[:n]
-	return
-}
-
 func archive(in, out *file, mws []Middleware) (hash []byte, err error) {
 	var (
 		cu bool // Caught up boolean
@@ -193,5 +175,23 @@ func archive(in, out *file, mws []Middleware) (hash []byte, err error) {
 	}
 
 	err = out.Flush()
+	return
+}
+
+func encodeBase64(in []byte) (out []byte) {
+	out = make([]byte, base64.StdEncoding.EncodedLen(len(in)))
+	base64.StdEncoding.Encode(out, in)
+	return
+}
+
+func decodeBase64(in []byte) (out []byte, err error) {
+	var n int
+
+	out = make([]byte, base64.StdEncoding.DecodedLen(len(in)))
+	if n, err = base64.StdEncoding.Decode(out, in); err != nil {
+		return
+	}
+
+	out = out[:n]
 	return
 }
