@@ -18,6 +18,10 @@ const (
 	_newline   = '\n' // Character for newline
 	_pound     = '#'  // Character for pound
 	_space     = ' '  // Character for space
+
+	// MaxKeyLen is the maximum length for keys
+	MaxKeyLen = 255
+	hashLen   = 16
 )
 
 const (
@@ -46,14 +50,30 @@ func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) 
 		// Make the internal storage map, it would be a shame to panic on put!
 		s: make(storage),
 
+		fLoc:  filepath.Join(path, name+".hdb"),
+		tfLoc: filepath.Join(path, name+".tmp.hdb"),
+
 		path: path,
 		name: name,
 		mws:  mws,
 		opts: opts,
 	}
 
+	//	mws = append(mws, b64MW{})
+	reverseMWSlice(mws)
+
 	// Open persistance file
-	if hip.f, err = newFile(path, name, mws); err != nil {
+	if hip.f, err = newFile(path, name, mws, true); err != nil {
+		return
+	}
+
+	// Open archive file
+	if hip.af, err = newFile(path, name+".archive", mws, true); err != nil {
+		return
+	}
+
+	// Open temporary file
+	if hip.tf, err = newFile(path, name+".tmp", mws, false); err != nil {
 		return
 	}
 
@@ -64,7 +84,7 @@ func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) 
 	h.rwtxp = sync.Pool{New: func() interface{} { return h.newReadWriteTx() }}
 
 	// Replay file data to populate the database
-	h.f.Read(h.replay)
+	err = h.f.Read(h.replay)
 	return
 }
 
@@ -73,7 +93,13 @@ type Hippy struct {
 	mux sync.RWMutex
 
 	s storage // In-memory storage
-	f *file   //Persistent storage
+
+	fLoc  string
+	tfLoc string
+
+	f  *file // Persistent storage
+	af *file // Archive file
+	tf *file // Temporary file
 
 	rtxp  sync.Pool // Read transaction pool
 	wtxp  sync.Pool // Write transaction pool
@@ -134,7 +160,7 @@ END:
 func (h *Hippy) write(a map[string]action) (err error) {
 	for k, v := range a {
 		// We are going to write before modifying memory
-		if err = h.f.WriteLine(newLogLine(k, v.a, v.b)); err != nil {
+		if err = h.f.WriteLine(newLogLine(v.a, k, v.b)); err != nil {
 			return
 		}
 
@@ -152,64 +178,63 @@ func (h *Hippy) write(a map[string]action) (err error) {
 	return
 }
 
+func (h *Hippy) archive(fr *fileReader) (err error) {
+	var nd bool // New data boolean
+
+	if err = h.af.SeekToEnd(); err != nil {
+		return
+	}
+
+	for b, err := fr.ReadLine(); err == nil; b, err = fr.ReadLine() {
+		// Parse action
+		a, _, _, _ := parseLogLine(b)
+		switch a {
+		case _put, _del:
+			h.af.WriteLine(b)
+			nd = true
+		}
+	}
+
+	if !nd {
+		return
+	}
+	return h.af.WriteLine(newHashLine())
+}
+
 func (h *Hippy) compact() (err error) {
-	var (
-		archv *file
-		tmp   *file
-		hash  []byte
-
-		fLoc = filepath.Join(h.path, h.name+".hdb")     // Main file location
-		tLoc = filepath.Join(h.path, h.name+".tmp.hdb") // Temporary file location
-	)
-
-	h.mux.Lock()
-	// Open archive file
-	if archv, err = newFile(h.path, h.name+".archive", h.mws); err != nil {
-		goto END
-	}
-
-	if tmp, err = newFile(h.path, h.name+".tmp", h.mws); err != nil {
-		goto END
-	}
-
-	if hash, err = archive(h.f, archv, h.mws); err != nil {
-		goto END
+	if err = h.tf.SetFile(); err != nil {
+		return
 	}
 
 	// Write data contents to tmp file
 	for k, v := range h.s {
-		if err = tmp.WriteLine(newLogLine(k, _put, v)); err != nil {
-			goto END
+		if err = h.tf.WriteLine(newLogLine(_put, k, v)); err != nil {
+			return
 		}
 	}
 
-	if err = archv.Close(); err != nil {
-		goto END
-	}
-
 	// Add our current hash to the end
-	if err = tmp.WriteLine(hash); err != nil {
-		goto END
+	if err = h.tf.WriteLine(newHashLine()); err != nil {
+		return
 	}
 
-	if err = tmp.Close(); err != nil {
-		goto END
+	if err = h.tf.Close(); err != nil {
+		return
 	}
 
 	if err = h.f.Close(); err != nil {
-		goto END
+		return
 	}
 
-	err = os.Rename(tLoc, fLoc)
+	if err = os.Rename(h.tfLoc, h.fLoc); err != nil {
+		return
+	}
 
 	if err = h.f.SetFile(); err != nil {
-		goto END
+		return
 	}
 
 	err = h.f.SeekToEnd()
-
-END:
-	h.mux.Unlock()
 	return
 }
 
@@ -341,14 +366,25 @@ func (h *Hippy) Close() (err error) {
 	h.mux.Lock()
 	if h.closed {
 		err = ErrIsClosed
-	} else {
-		h.closed = true
+		goto END
 	}
+	h.closed = true
+
+	if h.opts.ArchiveOnClose {
+		if err = h.f.SeekToLastHash(); err != nil {
+			goto END
+		}
+
+		if err = h.f.Read(h.archive); err != nil {
+			goto END
+		}
+	}
+
+	if h.opts.CompactOnClose {
+		err = h.compact()
+	}
+
+END:
 	h.mux.Unlock()
-
-	if err != nil {
-		return
-	}
-
-	return h.compact()
+	return
 }

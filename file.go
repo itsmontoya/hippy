@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-func newFile(path, name string, mws []Middleware) (f *file, err error) {
+func newFile(path, name string, mws []Middleware, set bool) (f *file, err error) {
 	f = &file{
 		path: path,
 		name: name,
@@ -19,10 +19,13 @@ func newFile(path, name string, mws []Middleware) (f *file, err error) {
 		closed: true,
 	}
 
+	if !set {
+		return
+	}
+
 	if err = f.SetFile(); err != nil {
 		f = nil
 	}
-
 	return
 }
 
@@ -83,6 +86,59 @@ func (f *file) SeekToEnd() (err error) {
 	}
 
 	_, err = f.f.Seek(0, os.SEEK_END)
+	return
+}
+
+func (f *file) SeekToLastHash() (err error) {
+	if f.closed {
+		return ErrIsClosed
+	}
+
+	if err = f.SeekToStart(); err != nil {
+		return
+	}
+
+	var (
+		buf [32]byte // Buffer
+		ttl int64
+		n   int
+
+		hs  int64 = -1   // Hash start
+		inl       = true // Is new line
+	)
+
+	for n, err = f.f.Read(buf[:]); err == nil; n, err = f.f.Read(buf[:]) {
+		for i, b := range buf[:n] {
+			if b == _newline {
+				inl = true
+				continue
+			}
+
+			if !inl {
+				continue
+			}
+
+			if b == _hash {
+				hs = ttl + int64(i)
+			}
+
+			inl = false
+		}
+
+		ttl += int64(n)
+	}
+
+	if err == io.EOF {
+		err = nil
+	} else if err != nil {
+		return
+	}
+
+	if hs == -1 {
+		return ErrHashNotFound
+	}
+
+	_, err = f.f.Seek(hs, 0)
 	return
 }
 

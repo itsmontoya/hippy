@@ -3,7 +3,9 @@ package hippy
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"io"
+	"io/ioutil"
 
 	"github.com/missionMeteora/toolkit/crypty"
 )
@@ -92,6 +94,24 @@ func (c *CryptyMW) Writer(w io.Writer) (io.WriteCloser, error) {
 // Reader returns a new gzip reader
 func (c *CryptyMW) Reader(r io.Reader) (rc io.ReadCloser, err error) {
 	return crypty.NewReaderPair(r, c.key, c.iv)
+}
+
+type b64MW struct {
+}
+
+// Name returns the middleware name
+func (b b64MW) Name() string {
+	return "encoding/base64"
+}
+
+// Writer returns a new gzip writer
+func (b b64MW) Writer(w io.Writer) (io.WriteCloser, error) {
+	return base64.NewEncoder(base64.StdEncoding, w), nil
+}
+
+// Reader returns a new gzip reader
+func (b b64MW) Reader(r io.Reader) (rc io.ReadCloser, err error) {
+	return ioutil.NopCloser(base64.NewDecoder(base64.StdEncoding, r)), nil
 }
 
 func readMWBytes(in []byte, mws []Middleware) (out []byte, err error) {

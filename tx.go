@@ -1,9 +1,6 @@
 package hippy
 
-import (
-	"strings"
-	"sync"
-)
+import "sync"
 
 // ReadTx is a read-only transaction
 type ReadTx struct {
@@ -101,6 +98,10 @@ END:
 
 // Put will put
 func (rw *ReadWriteTx) Put(k string, v []byte) (err error) {
+	if len(k) > MaxKeyLen {
+		return ErrInvalidKey
+	}
+
 	// Create action
 	act := action{a: _put}
 	rw.mux.Lock()
@@ -153,8 +154,7 @@ type WriteTx struct {
 
 // Put will put
 func (w *WriteTx) Put(k string, v []byte) (err error) {
-	// If key contains our separator value, return ErrInvalidKey
-	if strings.IndexByte(k, _separator) > -1 {
+	if len(k) > MaxKeyLen {
 		return ErrInvalidKey
 	}
 
