@@ -1,9 +1,11 @@
 package hippy
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 func newFile(path, name string, mws []Middleware) (f *file, err error) {
@@ -25,110 +27,21 @@ func newFile(path, name string, mws []Middleware) (f *file, err error) {
 }
 
 type file struct {
+	mux sync.Mutex
+
 	f    *os.File
 	path string
 	name string
 
 	hasMW bool
 	mws   []Middleware
-	mww   io.WriteCloser
-	mwr   io.ReadCloser
 
 	closed bool
-}
-
-func (f *file) setW() (err error) {
-	if !f.hasMW {
-		return
-	}
-
-	if f.mww != nil {
-		return
-	}
-
-	if f.mww, err = newMWWriter(f.f, f.mws); err != nil {
-		f.mww = nil
-		return
-	}
-
-	return
-}
-
-func (f *file) setR() (err error) {
-	if !f.hasMW {
-		return
-	}
-
-	if f.mwr != nil {
-		return
-	}
-
-	if f.mwr, err = newMWReader(f.f, f.mws); err != nil {
-		f.mwr = nil
-		return
-	}
-
-	return
-}
-
-func (f *file) Write(b []byte) (n int, err error) {
-	if f.closed {
-		err = ErrIsClosed
-		return
-	}
-
-	if !f.hasMW {
-		return f.f.Write(b)
-	}
-
-	if err = f.setW(); err != nil {
-		return
-	}
-
-	return f.mww.Write(b)
-}
-
-func (f *file) Read(b []byte) (n int, err error) {
-	if f.closed {
-		err = ErrIsClosed
-		return
-	}
-
-	if !f.hasMW {
-		return f.f.Read(b)
-	}
-
-	if err = f.setR(); err != nil {
-		return
-	}
-
-	return f.mwr.Read(b)
-}
-
-func (f *file) Flush() (err error) {
-	if f.closed {
-		return ErrIsClosed
-	}
-
-	if f.mww != nil {
-		f.mww.Close()
-		f.mww = nil
-	}
-
-	if f.mwr != nil {
-		f.mwr.Close()
-		f.mwr = nil
-	}
-	return f.f.Sync()
 }
 
 func (f *file) Close() (err error) {
 	if f.closed {
 		return ErrIsClosed
-	}
-
-	if err = f.Flush(); err != nil {
-		return
 	}
 
 	if err = f.f.Close(); err != nil {
@@ -147,7 +60,7 @@ func (f *file) SetFile() (err error) {
 
 	fn := filepath.Join(f.path, f.name+".hdb")
 	// Open persistance file
-	if f.f, err = os.OpenFile(fn, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644); err != nil {
+	if f.f, err = os.OpenFile(fn, os.O_CREATE|os.O_RDWR, 0644); err != nil {
 		return
 	}
 
@@ -169,11 +82,63 @@ func (f *file) SeekToEnd() (err error) {
 		return ErrIsClosed
 	}
 
-	var fi os.FileInfo
-	if fi, err = f.f.Stat(); err != nil {
-		return err
+	_, err = f.f.Seek(0, os.SEEK_END)
+	return
+}
+
+func (f *file) WriteLine(b []byte) (err error) {
+	if f.closed {
+		err = ErrIsClosed
+		return
 	}
 
-	_, err = f.f.Seek(fi.Size(), 0)
+	if f.hasMW {
+		if b, err = writeMWBytes(b, f.mws); err != nil {
+			return
+		}
+	}
+
+	b = append(b, _newline)
+	if _, err = f.f.Write(b); err != nil {
+		return
+	}
+
+	return f.f.Sync()
+}
+
+func (f *file) Read(fn func(r *fileReader) error) (err error) {
+	if f.closed {
+		err = ErrIsClosed
+		return
+	}
+
+	fr := fileReader{
+		f:    f,
+		scnr: bufio.NewScanner(f.f),
+	}
+
+	err = fn(&fr)
+
+	fr.f = nil
+	fr.scnr = nil
 	return
+}
+
+type fileReader struct {
+	f    *file
+	scnr *bufio.Scanner
+}
+
+func (fr *fileReader) ReadLine() (b []byte, err error) {
+	if !fr.scnr.Scan() {
+		err = io.EOF
+		return
+	}
+
+	if !fr.f.hasMW {
+		b = fr.scnr.Bytes()
+		return
+	}
+
+	return readMWBytes(fr.scnr.Bytes(), fr.f.mws)
 }

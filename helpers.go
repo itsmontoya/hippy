@@ -1,7 +1,6 @@
 package hippy
 
 import (
-	"bufio"
 	"encoding/base64"
 
 	"github.com/missionMeteora/uuid"
@@ -23,6 +22,59 @@ func (e Error) Error() string {
 	return string(e)
 }
 
+// ErrorList is a list of errors
+type ErrorList []error
+
+// Error is the error interface implementation
+func (e ErrorList) Error() string {
+	if len(e) == 0 {
+		return ""
+	}
+
+	b := []byte("the following errors occured:\n")
+	for _, err := range e {
+		b = append(b, err.Error()...)
+		b = append(b, '\n')
+	}
+
+	return string(b)
+}
+
+// Append appends an error to the error list
+func (e ErrorList) Append(err error) ErrorList {
+	if err == nil {
+		return e
+	}
+
+	if oe, ok := err.(ErrorList); ok {
+		return append(e, oe...)
+	}
+	return append(e, err)
+}
+
+// Push adds the error to the list if it is not nil
+func (e *ErrorList) Push(err error) {
+	if e == nil || err == nil {
+		return
+	}
+	switch err := err.(type) {
+	case ErrorList:
+		*e = append(*e, err...)
+	case *ErrorList:
+		*e = append(*e, *err...)
+	default:
+		*e = append(*e, err)
+	}
+}
+
+// Err returns error value of ErrorList
+func (e ErrorList) Err() error {
+	if len(e) == 0 {
+		return nil
+	}
+	return e
+}
+
 // newLogLine will return a new log line given a provided key, action, and body
 func newLogLine(key string, a byte, b []byte) (out []byte) {
 	// Pre-allocate the slice to the size of the sum:
@@ -39,7 +91,7 @@ func newLogLine(key string, a byte, b []byte) (out []byte) {
 
 	// If action is DELETE, we don't need to append the separator and value, goto the end
 	if a == _del {
-		goto END
+		return
 	}
 
 	// Append separator
@@ -47,21 +99,15 @@ func newLogLine(key string, a byte, b []byte) (out []byte) {
 
 	// Append body
 	out = append(out, encodeBase64(b)...)
-
-END:
-	// Lastly, append a newline before returning
-	out = append(out, _newline)
 	return
 }
 
 func newHashLine() (out []byte) {
-	// Out is the length of a UUID (16), our prefix '# ' (2), and our suffix (Newline, 1)
-	out = make([]byte, 19)
+	// Out is the length of a UUID (16), our prefix '# ' (2)
+	out = make([]byte, 18)
 	out[0] = _pound
 	out[1] = _space
 	copy(out[2:], []byte(uuid.New().String()))
-
-	out[18] = _newline
 	return
 }
 
@@ -123,58 +169,60 @@ END:
 }
 
 func archive(in, out *file, mws []Middleware) (hash []byte, err error) {
-	var (
-		cu bool // Caught up boolean
-		b  []byte
+	/*
+		var (
+			cu bool // Caught up boolean
+			b  []byte
 
-		scnr *bufio.Scanner
-		nl   = []byte{_newline}
-	)
+			scnr *bufio.Scanner
+			nl   = []byte{_newline}
+		)
 
-	in.SeekToStart()
-	scnr = bufio.NewScanner(in)
+		in.SeekToStart()
+		scnr = bufio.NewScanner(in)
 
-	// For each line..
-	for scnr.Scan() {
-		b = scnr.Bytes()
-		// Parse action, key, and value
-		a, _, _, _ := parseLogLine(b)
+		// For each line..
+		for scnr.Scan() {
+			b = scnr.Bytes()
+			// Parse action, key, and value
+			a, _, _, _ := parseLogLine(b)
 
-		switch a {
-		case _put, _del:
-		case _hash:
-			cu = true
-			continue
-		default:
-			continue
+			switch a {
+			case _put, _del:
+			case _hash:
+				cu = true
+				continue
+			default:
+				continue
+			}
+
+			if !cu {
+				continue
+			}
+
+			// TODO: Switch this section out with an io.Copy
+			if _, err = out.Write(b); err != nil {
+				return
+			}
+
+			if _, err = out.Write(nl); err != nil {
+				return
+			}
+			// TODO END
 		}
 
 		if !cu {
-			continue
-		}
-
-		// TODO: Switch this section out with an io.Copy
-		if _, err = out.Write(b); err != nil {
+			err = ErrHashNotFound
 			return
 		}
 
-		if _, err = out.Write(nl); err != nil {
+		hash = newHashLine()
+		if _, err = out.Write(hash); err != nil {
 			return
 		}
-		// TODO END
-	}
 
-	if !cu {
-		err = ErrHashNotFound
-		return
-	}
-
-	hash = newHashLine()
-	if _, err = out.Write(hash); err != nil {
-		return
-	}
-
-	err = out.Flush()
+		err = out.Flush()
+	*/
 	return
 }
 

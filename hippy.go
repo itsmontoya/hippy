@@ -1,7 +1,7 @@
 package hippy
 
 import (
-	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -64,7 +64,7 @@ func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) 
 	h.rwtxp = sync.Pool{New: func() interface{} { return h.newReadWriteTx() }}
 
 	// Replay file data to populate the database
-	h.replay()
+	h.f.Read(h.replay)
 	return
 }
 
@@ -87,7 +87,7 @@ type Hippy struct {
 	closed bool // Closed state
 }
 
-func (h *Hippy) replay() (err error) {
+func (h *Hippy) replay(fr *fileReader) (err error) {
 	var (
 		a   byte
 		key string
@@ -96,13 +96,10 @@ func (h *Hippy) replay() (err error) {
 	)
 
 	h.mux.Lock()
-	// Set scanner to find each line
-	scnr := bufio.NewScanner(h.f)
-
 	// For each line..
-	for scnr.Scan() {
+	for b, err := fr.ReadLine(); err == nil; b, err = fr.ReadLine() {
 		// Parse action, key, and value
-		if a, key, val, err = parseLogLine(scnr.Bytes()); err != nil {
+		if a, key, val, err = parseLogLine(b); err != nil {
 			continue
 		}
 
@@ -121,12 +118,11 @@ func (h *Hippy) replay() (err error) {
 		de = true
 	}
 
-	if de {
+	if de || (err != nil && err != io.EOF) {
 		goto END
 	}
 
-	h.f.Write(newHashLine())
-	h.f.Flush()
+	err = h.f.WriteLine(newHashLine())
 
 END:
 	h.mux.Unlock()
@@ -138,7 +134,7 @@ END:
 func (h *Hippy) write(a map[string]action) (err error) {
 	for k, v := range a {
 		// We are going to write before modifying memory
-		if _, err = h.f.Write(newLogLine(k, v.a, v.b)); err != nil {
+		if err = h.f.WriteLine(newLogLine(k, v.a, v.b)); err != nil {
 			return
 		}
 
@@ -153,8 +149,7 @@ func (h *Hippy) write(a map[string]action) (err error) {
 		}
 	}
 
-	// Call sync to make sure the data has flushed to disk
-	return h.f.Flush()
+	return
 }
 
 func (h *Hippy) compact() (err error) {
@@ -183,7 +178,7 @@ func (h *Hippy) compact() (err error) {
 
 	// Write data contents to tmp file
 	for k, v := range h.s {
-		if _, err = tmp.Write(newLogLine(k, _put, v)); err != nil {
+		if err = tmp.WriteLine(newLogLine(k, _put, v)); err != nil {
 			goto END
 		}
 	}
@@ -193,7 +188,7 @@ func (h *Hippy) compact() (err error) {
 	}
 
 	// Add our current hash to the end
-	if _, err = tmp.Write(hash); err != nil {
+	if err = tmp.WriteLine(hash); err != nil {
 		goto END
 	}
 

@@ -21,9 +21,14 @@ var (
 
 	testKeys  = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	testKeysB = getKeysB(testKeys)
-	testVal   = []byte("Hello!")
+	testVal   = []byte("Hello! This is my long-ish string. It has some cool information in it. Check it out man!")
 
 	tmpPath string
+
+	opts Opts
+
+	cryptyKey = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
+	cryptyIV  = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 )
 
 func getKeysB(keys []string) (out [][]byte) {
@@ -36,6 +41,8 @@ func getKeysB(keys []string) (out [][]byte) {
 func TestMain(m *testing.M) {
 	var err error
 
+	opts, _ = NewOpts(nil)
+
 	if tmpPath, err = ioutil.TempDir("", "hippy_testing_"); err != nil {
 		fmt.Println("Error getting temp dir:", err)
 		return
@@ -43,7 +50,7 @@ func TestMain(m *testing.M) {
 
 	tmpPath = "testing"
 
-	if db, err = New(tmpPath, "test"); err != nil {
+	if db, err = New(tmpPath, "test", opts); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -77,13 +84,14 @@ func TestBasic(t *testing.T) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "basic_test"); err != nil {
+	if db, err = New(tmpPath, "basic_test", opts); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
 
 	hippyRW(db, 1)
 	db.Close()
+	os.Remove(filepath.Join(tmpPath, "basic_test.hdb"))
 }
 
 func TestMWBasic(t *testing.T) {
@@ -92,13 +100,14 @@ func TestMWBasic(t *testing.T) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "basicMW_test", GZipMW{}); err != nil {
+	if db, err = New(tmpPath, "basicMW_test", opts, GZipMW{}); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
 
 	hippyRW(db, 1)
 	fmt.Println(db.Close())
+	os.Remove(filepath.Join(tmpPath, "basic_test.hdb"))
 }
 
 func TestMedium(t *testing.T) {
@@ -109,7 +118,7 @@ func TestMedium(t *testing.T) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "medium_test"); err != nil {
+	if db, err = New(tmpPath, "medium_test", opts); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -154,7 +163,7 @@ func TestMedium(t *testing.T) {
 	})
 
 	db.Close()
-	//	os.Remove("basic_test.db")
+	os.Remove(filepath.Join(tmpPath, "medium_test.hdb"))
 }
 
 func BenchmarkShortHippy(b *testing.B) {
@@ -177,6 +186,57 @@ func BenchmarkBasicHippy(b *testing.B) {
 	})
 
 	b.ReportAllocs()
+}
+
+func BenchmarkGzipHippy(b *testing.B) {
+	b.StopTimer()
+	var (
+		db  *Hippy
+		err error
+	)
+
+	if db, err = New(tmpPath, "gzip", opts, GZipMW{}); err != nil {
+		b.Error("Error opening:", err)
+		return
+	}
+	b.StartTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			hippyRW(db, 100)
+
+		}
+	})
+
+	b.ReportAllocs()
+	b.StopTimer()
+	db.Close()
+	os.Remove(filepath.Join(tmpPath, "gzip.hdb"))
+}
+
+func BenchmarkCryptyHippy(b *testing.B) {
+	b.StopTimer()
+	var (
+		db  *Hippy
+		err error
+	)
+
+	if db, err = New(tmpPath, "crypty", opts, NewCryptyMW(cryptyKey, cryptyIV)); err != nil {
+		b.Error("Error opening:", err)
+		return
+	}
+	b.StartTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			hippyRW(db, 100)
+
+		}
+	})
+
+	b.ReportAllocs()
+	db.Close()
+	os.Remove(filepath.Join(tmpPath, "crypty.hdb"))
 }
 
 func BenchmarkAllGetHippy(b *testing.B) {

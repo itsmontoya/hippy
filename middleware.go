@@ -1,8 +1,11 @@
 package hippy
 
 import (
+	"bytes"
 	"compress/gzip"
 	"io"
+
+	"github.com/missionMeteora/toolkit/crypty"
 )
 
 // Middleware is the interface that defines an encoder/decoder chain.
@@ -12,93 +15,34 @@ type Middleware interface {
 	Reader(r io.Reader) (io.ReadCloser, error)
 }
 
-func newMWWriter(in io.Writer, mws []Middleware) (out io.WriteCloser, err error) {
-	mwl := len(mws)
-	w := mwWriter{
-		wcs: make([]io.WriteCloser, mwl),
-		li:  mwl - 1,
-	}
+type readClosers []io.ReadCloser
 
-	for i, mw := range mws {
-		curr := w.li - i
-		if i == 0 {
-			w.wcs[curr], err = mw.Writer(in)
-		} else {
-			w.wcs[curr], err = mw.Writer(w.wcs[curr+1])
+func (rcs readClosers) Close() error {
+	var errs ErrorList
+	for _, rc := range rcs {
+		if rc == nil {
+			continue
 		}
+
+		errs = errs.Append(rc.Close())
 	}
 
-	out = &w
-	return
+	return errs.Err()
 }
 
-type mwWriter struct {
-	wcs []io.WriteCloser
-	li  int // Last index
+type writeClosers []io.WriteCloser
 
-	closed bool
-}
-
-func (w *mwWriter) Write(b []byte) (n int, err error) {
-	return w.wcs[w.li].Write(b)
-}
-
-func (w *mwWriter) Close() (err error) {
-	if w.closed {
-		return ErrIsClosed
-	}
-	w.closed = true
-
-	for _, wc := range w.wcs {
-		wc.Close()
-	}
-
-	return
-}
-
-func newMWReader(in io.Reader, mws []Middleware) (out io.ReadCloser, err error) {
-	mwl := len(mws)
-	r := mwReader{
-		rcs: make([]io.ReadCloser, mwl),
-		li:  mwl - 1,
-	}
-
-	for i, mw := range mws {
-		curr := r.li - i
-		if i == 0 {
-			r.rcs[curr], err = mw.Reader(in)
-		} else {
-			r.rcs[curr], err = mw.Reader(r.rcs[curr+1])
+func (wcs writeClosers) Close() error {
+	var errs ErrorList
+	for _, wc := range wcs {
+		if wc == nil {
+			continue
 		}
+
+		errs = errs.Append(wc.Close())
 	}
 
-	out = &r
-	return
-}
-
-type mwReader struct {
-	rcs []io.ReadCloser
-	li  int // Last index
-
-	closed bool
-}
-
-func (r *mwReader) Read(b []byte) (n int, err error) {
-	return r.rcs[r.li].Read(b)
-}
-
-func (r *mwReader) Close() (err error) {
-	if r.closed {
-		return ErrIsClosed
-	}
-
-	r.closed = true
-
-	for _, rc := range r.rcs {
-		rc.Close()
-	}
-
-	return
+	return errs.Err()
 }
 
 // GZipMW handles gzipping
@@ -119,6 +63,130 @@ func (g GZipMW) Writer(w io.Writer) (io.WriteCloser, error) {
 func (g GZipMW) Reader(r io.Reader) (rc io.ReadCloser, err error) {
 	if rc, err = gzip.NewReader(r); err != nil {
 		rc = nil
+	}
+
+	return
+}
+
+// NewCryptyMW returns a new Crypty middleware
+func NewCryptyMW(key, iv []byte) *CryptyMW {
+	return &CryptyMW{key, iv}
+}
+
+// CryptyMW handles encryption
+type CryptyMW struct {
+	key []byte
+	iv  []byte
+}
+
+// Name returns the middleware name
+func (c *CryptyMW) Name() string {
+	return "encryption/crypty"
+}
+
+// Writer returns a new gzip writer
+func (c *CryptyMW) Writer(w io.Writer) (io.WriteCloser, error) {
+	return crypty.NewWriterPair(w, c.key, c.iv)
+}
+
+// Reader returns a new gzip reader
+func (c *CryptyMW) Reader(r io.Reader) (rc io.ReadCloser, err error) {
+	return crypty.NewReaderPair(r, c.key, c.iv)
+}
+
+func readMWBytes(in []byte, mws []Middleware) (out []byte, err error) {
+	var (
+		rcs  readClosers
+		oBuf = bytes.NewBuffer(nil)
+	)
+
+	if rcs, err = getReadClosers(in, mws); err != nil {
+		return
+	}
+
+	io.Copy(oBuf, rcs[0])
+
+	if err = rcs.Close(); err != nil {
+		return
+	}
+
+	out = oBuf.Bytes()
+	return
+}
+
+func writeMWBytes(in []byte, mws []Middleware) (out []byte, err error) {
+	var (
+		wcs  writeClosers
+		oBuf = bytes.NewBuffer(nil)
+	)
+
+	if wcs, err = getWriteClosers(oBuf, mws); err != nil {
+		return
+	}
+
+	wcs[0].Write(in)
+
+	if err = wcs.Close(); err != nil {
+		return
+	}
+
+	out = oBuf.Bytes()
+	return
+}
+
+func getReadClosers(in []byte, mws []Middleware) (rcs readClosers, err error) {
+	var (
+		rdr io.ReadCloser
+		mwl = len(mws)
+	)
+
+	rcs = make(readClosers, mwl)
+	for i, mw := range mws {
+		if i == 0 {
+			if rdr, err = mw.Reader(bytes.NewBuffer(in)); err != nil {
+				goto END
+			}
+		} else {
+			if rdr, err = mw.Reader(rdr); err != nil {
+				goto END
+			}
+		}
+
+		rcs[mwl-1-i] = rdr
+	}
+
+END:
+	if err != nil {
+		rcs.Close()
+	}
+
+	return
+}
+
+func getWriteClosers(in io.Writer, mws []Middleware) (wcs writeClosers, err error) {
+	var (
+		wtr io.WriteCloser
+		mwl = len(mws)
+	)
+
+	wcs = make(writeClosers, mwl)
+	for i, mw := range mws {
+		if i == 0 {
+			if wtr, err = mw.Writer(in); err != nil {
+				goto END
+			}
+		} else {
+			if wtr, err = mw.Writer(wtr); err != nil {
+				goto END
+			}
+		}
+
+		wcs[mwl-1-i] = wtr
+	}
+
+END:
+	if err != nil {
+		wcs.Close()
 	}
 
 	return
