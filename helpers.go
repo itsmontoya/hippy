@@ -1,6 +1,10 @@
 package hippy
 
-import "github.com/missionMeteora/uuid"
+import (
+	"bytes"
+
+	"github.com/missionMeteora/uuid"
+)
 
 // action stores the action-type and body for a transaction item
 type action struct {
@@ -72,29 +76,23 @@ func (e ErrorList) Err() error {
 }
 
 // newLogLine will return a new log line given a provided key, action, and body
-func newLogLine(a byte, key string, b []byte) (out []byte) {
-	// Pre-allocate the slice to the size of the sum:
-	//	- Length of key
-	//	- Length of body
-	//	- Action and newline (two total)
-	out = make([]byte, 0, len(key)+len(b)+2)
-
-	// Append action
-	out = append(out, byte(a))
-
-	// Append key length
-	out = append(out, uint8(len(key)))
-
-	// Append key
-	out = append(out, key...)
+func newLogLine(a byte, key string, b []byte) (out *bytes.Buffer) {
+	// Get buffer from the buffer pool
+	out = bp.Get()
+	// Write action
+	out.WriteByte(byte(a))
+	// Write key length
+	out.WriteByte(uint8(len(key)))
+	// Write key
+	out.WriteString(key)
 
 	// If the action is not PUT, return
 	if a != _put {
 		return
 	}
 
-	// Append body
-	out = append(out, b...)
+	// Write body
+	out.Write(b)
 	return
 }
 

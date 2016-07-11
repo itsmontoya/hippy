@@ -1,6 +1,7 @@
 package hippy
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -158,11 +159,16 @@ END:
 // write will write a transaction to disk
 // Note: This is not thread safe. It is expected that the calling function is managing locks
 func (h *Hippy) write(a map[string]action) (err error) {
+	var ll *bytes.Buffer
 	for k, v := range a {
+		ll = newLogLine(v.a, k, v.b)
 		// We are going to write before modifying memory
-		if err = h.f.WriteLine(newLogLine(v.a, k, v.b)); err != nil {
+		if err = h.f.WriteLine(ll.Bytes()); err != nil {
 			return
 		}
+
+		bp.Put(ll)
+		ll = nil
 
 		// Fulfill action
 		switch v.a {
@@ -207,15 +213,20 @@ func (h *Hippy) archive(fr *fileReader) (err error) {
 }
 
 func (h *Hippy) compact() (err error) {
+	var ll *bytes.Buffer
 	if err = h.tf.SetFile(); err != nil {
 		return
 	}
 
 	// Write data contents to tmp file
 	for k, v := range h.s {
-		if err = h.tf.WriteLine(newLogLine(_put, k, v)); err != nil {
+		ll = newLogLine(_put, k, v)
+		if err = h.tf.WriteLine(ll.Bytes()); err != nil {
 			return
 		}
+
+		bp.Put(ll)
+		ll = nil
 	}
 
 	// Add our current hash to the end
