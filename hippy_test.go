@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	//"time"
 
 	"github.com/boltdb/bolt"
 )
@@ -77,6 +78,29 @@ func TestMain(m *testing.M) {
 	//	os.RemoveAll(tmpPath)
 	os.Exit(sts)
 }
+
+/*
+func TestMediumTimed(t *testing.T) {
+	var (
+		db  *Hippy
+		err error
+	)
+
+	if db, err = New(tmpPath, "basic_test", opts); err != nil {
+		fmt.Println("Error opening:", err)
+		return
+	}
+
+	s := time.Now().UnixNano()
+	for i := 0; i < 1000000; i++ {
+		hippyRW(db, 1)
+	}
+	e := time.Now().UnixNano()
+	fmt.Printf("It took %vms to process!\n", (e-s)/1000/1000)
+	db.Close()
+	os.Remove(filepath.Join(tmpPath, "basic_test.hdb"))
+}
+*/
 
 func TestBasic(t *testing.T) {
 	var (

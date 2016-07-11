@@ -33,6 +33,7 @@ type file struct {
 	mux sync.Mutex
 
 	f    *os.File
+	buf  *bufio.Writer
 	path string
 	name string
 
@@ -47,11 +48,16 @@ func (f *file) Close() (err error) {
 		return ErrIsClosed
 	}
 
+	if err = f.buf.Flush(); err != nil {
+		return
+	}
+
 	if err = f.f.Close(); err != nil {
 		return
 	}
 
 	f.f = nil
+	f.buf = nil
 	f.closed = true
 	return
 }
@@ -67,6 +73,7 @@ func (f *file) SetFile() (err error) {
 		return
 	}
 
+	f.buf = bufio.NewWriter(f.f)
 	f.closed = false
 	return
 }
@@ -155,7 +162,17 @@ func (f *file) WriteLine(b []byte) (err error) {
 	}
 
 	b = append(b, _newline)
-	if _, err = f.f.Write(b); err != nil {
+	_, err = f.buf.Write(b)
+	return
+}
+
+func (f *file) Flush() (err error) {
+	if f.closed {
+		err = ErrIsClosed
+		return
+	}
+
+	if err = f.buf.Flush(); err != nil {
 		return
 	}
 

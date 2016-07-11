@@ -59,7 +59,7 @@ func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) 
 		opts: opts,
 	}
 
-	//	mws = append(mws, b64MW{})
+	mws = append(mws, b64MW{})
 	reverseMWSlice(mws)
 
 	// Open persistance file
@@ -175,7 +175,7 @@ func (h *Hippy) write(a map[string]action) (err error) {
 		}
 	}
 
-	return
+	return h.f.Flush()
 }
 
 func (h *Hippy) archive(fr *fileReader) (err error) {
