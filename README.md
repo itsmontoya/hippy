@@ -45,8 +45,9 @@ func main(){
 			err error
 	)
 
-	// Create new db, with the location referencing "./test.db"
-	if db, err = hippy.New("./test.db"); err != nil {
+	// Create new db, with a path of "./" and a name of "data"
+	// Note: This will produce a file at "./data.hdb"
+	if db, err = hippy.New("./", "data"); err != nil {
 			fmt.Println("Error opening:", err)
 			return
 	}
