@@ -198,7 +198,12 @@ func (h *Hippy) archive(fr *fileReader) (err error) {
 	if !nd {
 		return
 	}
-	return h.af.WriteLine(newHashLine())
+
+	if err = h.af.WriteLine(newHashLine()); err != nil {
+		return
+	}
+
+	return h.af.Flush()
 }
 
 func (h *Hippy) compact() (err error) {
