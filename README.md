@@ -5,23 +5,23 @@ Hippy is an in-memory database with aspirations to be ACID compliant.
 ## Benchmarks
 ```
 # Short (1:1 Get/Put ratio, 1 iteration per operation)
-BenchmarkShortHippy-4       2000            880331 ns/op           17768 B/op         70 allocs/op
-BenchmarkShortLMap-4     1000000              2231 ns/op             960 B/op         10 allocs/op
-BenchmarkShortBolt-4        2000            872881 ns/op           19688 B/op         72 allocs/op
+BenchmarkShortHippy-4       2000            883227 ns/op           16818 B/op         60 allocs/op
+BenchmarkShortLMap-4     1000000              2259 ns/op             960 B/op         10 allocs/op
+BenchmarkShortBolt-4        2000            870003 ns/op           19688 B/op         72 allocs/op
 
 # Basic (1:1 Get/Put ratio, 100 iterations per operation)
-BenchmarkBasicHippy-4       2000            883276 ns/op           17766 B/op         70 allocs/op
-BenchmarkBasicLMap-4       10000            223901 ns/op           96001 B/op       1000 allocs/op
-BenchmarkBasicBolt-4        2000           1026891 ns/op           84241 B/op       3042 allocs/op
+BenchmarkBasicHippy-4       2000            882180 ns/op           16810 B/op         60 allocs/op
+BenchmarkBasicLMap-4       10000            221503 ns/op           96001 B/op       1000 allocs/op
+BenchmarkBasicBolt-4        2000           1031581 ns/op           84241 B/op       3042 allocs/op
 
 # All Get (1:0 Get/Put ratio, 100 iterations per operation)
-BenchmarkAllGetHippy-4    200000             10868 ns/op               0 B/op          0 allocs/op
-BenchmarkAllGetLMap-4      20000             72155 ns/op           96000 B/op       1000 allocs/op
-BenchmarkAllGetBolt-4      10000            116223 ns/op           32384 B/op       1005 allocs/op
+BenchmarkAllGetHippy-4    200000             11017 ns/op               0 B/op          0 allocs/op
+BenchmarkAllGetLMap-4      20000             72907 ns/op           96000 B/op       1000 allocs/op
+BenchmarkAllGetBolt-4      10000            115371 ns/op           32384 B/op       1005 allocs/op
 
 # Middleware testing (Benching only available for Hippy)
-BenchmarkGzipHippy-4         300           4103916 ns/op        14588125 B/op        575 allocs/op
-BenchmarkCryptyHippy-4      2000            897417 ns/op           25288 B/op        150 allocs/op
+BenchmarkGzipHippy-4         300           4182831 ns/op        14590796 B/op        575 allocs/op
+BenchmarkCryptyHippy-4      2000            896848 ns/op           24335 B/op        140 allocs/op
 
 ```
 
