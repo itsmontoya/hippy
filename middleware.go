@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 
 	"github.com/missionMeteora/toolkit/crypty"
+	"github.com/missionMeteora/toolkit/errors"
 )
 
 // Middleware is the interface that defines an encoder/decoder chain.
@@ -134,24 +135,28 @@ func readMWBytes(in []byte, mws []Middleware) (out []byte, err error) {
 	return
 }
 
-func writeMWBytes(in []byte, mws []Middleware) (out []byte, err error) {
-	var (
-		wcs  writeClosers
-		oBuf = bytes.NewBuffer(nil)
-	)
+type MWs struct {
+	s []Middleware
+}
 
-	if wcs, err = getWriteClosers(oBuf, mws); err != nil {
+func (m *MWs) Writer()
+
+func (m *MWs) Reader
+
+func writeMWBytes(w io.Writer, b []byte, mws []Middleware) (err error) {
+	var wcs writeClosers
+	if wcs, err = getWriteClosers(w, mws); err != nil {
 		return
 	}
 
-	wcs[0].Write(in)
+	var errs errors.ErrorList
+	_, err = wcs[0].Write(b)
+	errs = errs.Append(err)
 
-	if err = wcs.Close(); err != nil {
-		return
-	}
+	err = wcs.Close()
+	errs = errs.Append(err)
 
-	out = oBuf.Bytes()
-	return
+	return errs.Err()
 }
 
 func getReadClosers(in []byte, mws []Middleware) (rcs readClosers, err error) {

@@ -86,6 +86,8 @@ func newLogLine(a byte, key string, b []byte) (out *bytes.Buffer) {
 	// Write key
 	out.WriteString(key)
 
+	writeMWBytes()
+
 	// If the action is not PUT, return
 	if a != _put {
 		return
@@ -106,12 +108,7 @@ func newHashLine() (out []byte) {
 }
 
 // parseLogLine will return an action, key, and body from a provided log line (in the form of a byte slice)
-func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
-	var i uint8 = 2
-
-	// Action is the first index
-	a = b[0]
-
+func parseLogLine(a byte, b []byte) (key string, body []byte, err error) {
 	// Validate action
 	switch a {
 	case _put, _del, _hash:
@@ -121,7 +118,10 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 		return
 	}
 
-	keyLen := uint8(b[1])
+	var i uint8
+	keyLen := uint8(b[i])
+	i++
+
 	key = string(b[i : i+keyLen])
 	i += keyLen
 
@@ -134,14 +134,14 @@ func parseLogLine(b []byte) (a byte, key string, body []byte, err error) {
 	return
 }
 
-func reverseMWSlice(mws []Middleware) {
+func reverseByteSlice(bs []byte) {
 	var n int
-	mc := len(mws) - 1
-	for i := range mws {
+	mc := len(bs) - 1
+	for i := range bs {
 		if n = mc - i; n == i || n < i {
 			break
 		}
 
-		mws[i], mws[n] = mws[n], mws[i]
+		bs[i], bs[n] = bs[n], bs[i]
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"fmt"
 )
 
 func newFile(path, name string, mws []Middleware, set bool) (f *file, err error) {
@@ -149,21 +151,147 @@ func (f *file) SeekToLastHash() (err error) {
 	return
 }
 
+func (f *file) SeekToNextLine() (err error) {
+	if f.closed {
+		return ErrIsClosed
+	}
+
+	var (
+		buf    [32]byte // Buffer
+		n      int
+		nlf    bool
+		offset int64 = -1
+	)
+
+	for n, err = f.f.Read(buf[:]); err == nil; n, err = f.f.Read(buf[:]) {
+		for i, b := range buf[:n] {
+			if b == _newline {
+				nlf = true
+			} else if nlf {
+				if b > 0 {
+					offset = int64(n - i)
+				}
+
+				break
+			}
+		}
+
+		if offset > -1 {
+			break
+		}
+	}
+
+	if err != nil {
+		return
+	}
+
+	if offset == -1 {
+		return ErrLineNotFound
+	}
+
+	_, err = f.f.Seek(-offset, 1)
+	return
+}
+
+func (f *file) SeekToPrevLine() (err error) {
+	if f.closed {
+		return ErrIsClosed
+	}
+
+	var (
+		buf    [32]byte // Buffer
+		n      int
+		curr   int64
+		nlc    int
+		offset int64 = -1
+	)
+
+	peek(f.f)
+
+	if curr, err = f.f.Seek(-32, 1); err != nil {
+		if _, err = f.f.Seek(0, 0); err != nil {
+			return
+		}
+
+		err = nil
+	}
+
+	for offset == -1 && err == nil {
+		for n, err = f.f.Read(buf[:]); err == nil; n, err = f.f.Read(buf[:]) {
+			fmt.Println("About to iterate through buf", buf[:n])
+			reverseByteSlice(buf[:n])
+			for i, b := range buf[:n] {
+				if b == _newline {
+					nlc++
+				}
+
+				if nlc == 2 || nlc == 1 && curr == 0 {
+					offset = int64(i)
+					fmt.Println("Setting offset", n, i, offset)
+					break
+				}
+			}
+
+			if offset > -1 {
+				break
+			}
+		}
+
+		if curr == 0 || offset > -1 {
+			break
+		}
+
+		if curr, err = f.f.Seek(-64, 1); err != nil {
+			if _, err = f.f.Seek(0, 0); err != nil {
+				return
+			}
+
+			err = nil
+		}
+	}
+
+	reverseByteSlice(buf[:n])
+	fmt.Println("Offset", offset)
+	if offset == -1 {
+		return ErrLineNotFound
+	}
+
+	peek(f.f)
+	_, err = f.f.Seek(-offset, 1)
+	peek(f.f)
+	return
+}
+
+func peek(f *os.File) {
+	var pkk [32]byte
+	n, _ := f.Read(pkk[:])
+	f.Seek(int64(-n), 1)
+	fmt.Println("Peeek??", pkk[:n])
+}
+
 func (f *file) WriteLine(b []byte) (err error) {
 	if f.closed {
 		err = ErrIsClosed
 		return
 	}
 
+	// Write our prefix byte (action) without any middlewares so we can find a line action without decoding
+	if err = f.buf.WriteByte(b[0]); err != nil {
+		return
+	}
+
 	if f.hasMW {
-		if b, err = writeMWBytes(b, f.mws); err != nil {
+		if b, err = writeMWBytes(b[1:], f.mws); err != nil {
 			return
 		}
 	}
 
-	b = append(b, _newline)
-	_, err = f.buf.Write(b)
-	return
+	if _, err = f.buf.Write(b); err != nil {
+		return
+	}
+
+	// Write our suffix byte (newline) without any middlewares so we can find a line-end without decoding
+	return f.buf.WriteByte(_newline)
 }
 
 func (f *file) Flush() (err error) {
@@ -202,16 +330,30 @@ type fileReader struct {
 	scnr *bufio.Scanner
 }
 
-func (fr *fileReader) ReadLine() (b []byte, err error) {
-	if !fr.scnr.Scan() {
-		err = io.EOF
-		return
-	}
+func (fr *fileReader) readLine() (a byte, key string, b []byte, err error) {
+	b = fr.scnr.Bytes()
+	a = b[0]
+	b = b[1:]
 
 	if !fr.f.hasMW {
-		b = fr.scnr.Bytes()
+		goto END
+	}
+
+	if b, err = readMWBytes(b, fr.f.mws); err != nil {
 		return
 	}
 
-	return readMWBytes(fr.scnr.Bytes(), fr.f.mws)
+END:
+	key, b, err = parseLogLine(a, b)
+	return
+}
+
+func (fr *fileReader) ReadLines(fn func(byte, string, []byte, error) error) (err error) {
+	for fr.scnr.Scan() {
+		if err = fn(fr.readLine()); err != nil {
+			return
+		}
+	}
+
+	return
 }

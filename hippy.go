@@ -6,6 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/itsmontoya/lineFile"
+	"github.com/itsmontoya/middleware"
+	"github.com/missionMeteora/toolkit/bufferPool"
+
+	"fmt"
 )
 
 const (
@@ -38,6 +44,9 @@ const (
 	// ErrHashNotFound is returned when a hash line is not found while archiving
 	ErrHashNotFound = Error("hash not found")
 
+	// ErrLineNotFound is returned when a line is not found while calling SeekNextLine
+	ErrLineNotFound = Error("line not found")
+
 	// ErrIsClosed is returned when an action is attempted on a closed instance
 	ErrIsClosed = Error("cannot perform action on closed instance")
 
@@ -45,8 +54,15 @@ const (
 	ErrIsOpen = Error("cannot open an instance which is already open")
 )
 
+var (
+	// Hippy-global buffer pool
+	// Note: This might end up in the hippy struct, still deciding what will be the best solution
+	bp = bufferPool.New(32)
+)
+
 // New returns a new Hippy
 func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) {
+	mws = append(mws, b64MW{})
 	hip := Hippy{
 		// Make the internal storage map, it would be a shame to panic on put!
 		s: make(storage),
@@ -56,25 +72,29 @@ func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) 
 
 		path: path,
 		name: name,
-		mws:  mws,
+		mws:  middleware.NewMWs(mws...),
 		opts: opts,
 	}
 
-	mws = append(mws, b64MW{})
-	reverseMWSlice(mws)
-
 	// Open persistance file
-	if hip.f, err = newFile(path, name, mws, true); err != nil {
+	lfopts := lineFile.Opts{
+		Path: path,
+		Name: name,
+		Ext:  "hdb",
+	}
+
+	if hip.f, err = lineFile.New(lfopts); err != nil {
 		return
 	}
 
-	// Open archive file
-	if hip.af, err = newFile(path, name+".archive", mws, true); err != nil {
+	lfopts.Name = name + ".archive"
+	if hip.af, err = lineFile.New(lfopts); err != nil {
 		return
 	}
 
-	// Open temporary file
-	if hip.tf, err = newFile(path, name+".tmp", mws, false); err != nil {
+	lfopts.Name = name + ".tmp"
+	lfopts.NoSet = true
+	if hip.tf, err = lineFile.New(lfopts); err != nil {
 		return
 	}
 
@@ -93,41 +113,32 @@ func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) 
 type Hippy struct {
 	mux sync.RWMutex
 
-	s storage // In-memory storage
+	path string // Database path
+	name string // Database name
+	opts Opts   // Options
 
-	fLoc  string
-	tfLoc string
+	s   storage         // In-memory storage
+	mws *middleware.MWs // Middlewares
 
-	f  *file // Persistent storage
-	af *file // Archive file
-	tf *file // Temporary file
+	f  *lineFile.File // Persistent storage
+	af *lineFile.File // Archive file
+	tf *lineFile.File // Temporary file
 
 	rtxp  sync.Pool // Read transaction pool
 	wtxp  sync.Pool // Write transaction pool
 	rwtxp sync.Pool // Read/Write transaction pool
 
-	path string // Database path
-	name string // Database name
-	mws  []Middleware
-	opts Opts
-
 	closed bool // Closed state
 }
 
 func (h *Hippy) replay(fr *fileReader) (err error) {
-	var (
-		a   byte
-		key string
-		val []byte
-		de  bool // Data exists boolean
-	)
+	var de bool // Data exists boolean
 
 	h.mux.Lock()
 	// For each line..
-	for b, err := fr.ReadLine(); err == nil; b, err = fr.ReadLine() {
-		// Parse action, key, and value
-		if a, key, val, err = parseLogLine(b); err != nil {
-			continue
+	fr.ReadLines(func(a byte, key string, val []byte, err error) error {
+		if err != nil {
+			return err
 		}
 
 		// Fulfill action
@@ -139,19 +150,19 @@ func (h *Hippy) replay(fr *fileReader) (err error) {
 		case _del:
 			// Delete by key
 			delete(h.s, key)
+		default:
+			return nil
 		}
 
 		// We know data exists, let's set de to true
 		de = true
+		return nil
+	})
+
+	if !de {
+		err = h.f.WriteLine(newHashLine())
 	}
 
-	if de || (err != nil && err != io.EOF) {
-		goto END
-	}
-
-	err = h.f.WriteLine(newHashLine())
-
-END:
 	h.mux.Unlock()
 	return
 }
@@ -162,6 +173,7 @@ func (h *Hippy) write(a map[string]action) (err error) {
 	var ll *bytes.Buffer
 	for k, v := range a {
 		ll = newLogLine(v.a, k, v.b)
+
 		// We are going to write before modifying memory
 		if err = h.f.WriteLine(ll.Bytes()); err != nil {
 			return
@@ -184,28 +196,40 @@ func (h *Hippy) write(a map[string]action) (err error) {
 	return h.f.Flush()
 }
 
-func (h *Hippy) archive(fr *fileReader) (err error) {
-	var nd bool // New data boolean
+func (h *Hippy) archive() (err error) {
+	var n int64 // Written count
+
+	if err = h.f.Flush(); err != nil {
+		return
+	}
+
+	if err = h.f.SeekToLastHash(); err != nil {
+		return
+	}
+
+	if err = h.f.SeekToNextLine(); err != nil {
+		fmt.Println("Cannot seek to next line!", err)
+		return
+	}
+
+	if err = h.f.SeekToPrevLine(); err != nil {
+		fmt.Println("Cannot seek to prev line!", err)
+		return
+	}
 
 	if err = h.af.SeekToEnd(); err != nil {
 		return
 	}
 
-	for b, err := fr.ReadLine(); err == nil; b, err = fr.ReadLine() {
-		// Parse action
-		a, _, _, _ := parseLogLine(b)
-		switch a {
-		case _put, _del:
-			h.af.WriteLine(b)
-			nd = true
-		}
-	}
-
-	if !nd {
+	if n, err = io.Copy(h.af.f, h.f.f); err != nil || n == 0 {
 		return
 	}
 
-	if err = h.af.WriteLine(newHashLine()); err != nil {
+	if err = h.f.WriteLine(newHashLine()); err != nil {
+		return
+	}
+
+	if err = h.f.Flush(); err != nil {
 		return
 	}
 
@@ -377,7 +401,7 @@ END:
 	return
 }
 
-// Close will close Hippyh
+// Close will close Hippy
 func (h *Hippy) Close() (err error) {
 	h.mux.Lock()
 	if h.closed {
@@ -387,20 +411,17 @@ func (h *Hippy) Close() (err error) {
 	h.closed = true
 
 	if h.opts.ArchiveOnClose {
-		if err = h.f.SeekToLastHash(); err != nil {
-			goto END
-		}
-
-		if err = h.f.Read(h.archive); err != nil {
+		if err = h.archive(); err != nil {
 			goto END
 		}
 	}
 
 	if h.opts.CompactOnClose {
-		err = h.compact()
+		//	err = h.compact()
 	}
 
 END:
+	fmt.Println("Close complete!", err)
 	h.mux.Unlock()
 	return
 }
