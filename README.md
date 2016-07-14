@@ -19,7 +19,6 @@ BenchmarkAllGetHippy-4    200000             11162 ns/op               0 B/op   
 BenchmarkAllGetLMap-4      20000             77227 ns/op           96000 B/op       1000 allocs/op
 BenchmarkAllGetBolt-4      10000            124850 ns/op           32384 B/op       1005 allocs/op
 
-
 # Middleware testing (Benching only available for Hippy)
 BenchmarkGzipHippy-4         300           4983737 ns/op        14588356 B/op        584 allocs/op
 BenchmarkCryptyHippy-4      2000            911470 ns/op           20017 B/op        140 allocs/op
