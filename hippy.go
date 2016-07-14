@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/itsmontoya/lineFile"
 	"github.com/itsmontoya/middleware"
 	"github.com/missionMeteora/toolkit/bufferPool"
-
-	"fmt"
+	"github.com/missionMeteora/toolkit/errors"
+	"github.com/missionMeteora/uuid"
 )
 
 const (
@@ -33,25 +32,28 @@ const (
 
 const (
 	// ErrInvalidAction is returned when an invalid action occurs
-	ErrInvalidAction = Error("invalid action")
+	ErrInvalidAction = errors.Error("invalid action")
 
 	// ErrInvalidKey is returned when an invalid key is provided
-	ErrInvalidKey = Error("invalid key")
+	ErrInvalidKey = errors.Error("invalid key")
 
 	// ErrHashLine is returned when a hash line is parsed as a log line
-	ErrHashLine = Error("cannot parse hash line as log line")
+	ErrHashLine = errors.Error("cannot parse hash line as log line")
 
 	// ErrHashNotFound is returned when a hash line is not found while archiving
-	ErrHashNotFound = Error("hash not found")
+	ErrHashNotFound = errors.Error("hash not found")
 
 	// ErrLineNotFound is returned when a line is not found while calling SeekNextLine
-	ErrLineNotFound = Error("line not found")
+	ErrLineNotFound = errors.Error("line not found")
 
 	// ErrIsClosed is returned when an action is attempted on a closed instance
-	ErrIsClosed = Error("cannot perform action on closed instance")
+	ErrIsClosed = errors.Error("cannot perform action on closed instance")
 
 	// ErrIsOpen is returned when an instance is attempted to be re-opened when it's already active
-	ErrIsOpen = Error("cannot open an instance which is already open")
+	ErrIsOpen = errors.Error("cannot open an instance which is already open")
+
+	// ErrNoChanges is returned when no changes occur and an archive is not needed
+	ErrNoChanges = errors.Error("no changes occured, archive not necessary")
 )
 
 var (
@@ -61,15 +63,14 @@ var (
 )
 
 // New returns a new Hippy
-func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) {
-	mws = append(mws, b64MW{})
+func New(path, name string, opts Opts, mws ...middleware.Middleware) (h *Hippy, err error) {
+	// Append Base64 encoding to the end of the middleware chain. This will ensure that we do not have breaking characters within our saved data
+	//mws = append(mws, middleware.Base64MW{})
+
+	// Create Hippy, he doesn't smell.. quite yet.
 	hip := Hippy{
 		// Make the internal storage map, it would be a shame to panic on put!
-		s: make(storage),
-
-		fLoc:  filepath.Join(path, name+".hdb"),
-		tfLoc: filepath.Join(path, name+".tmp.hdb"),
-
+		s:    make(storage),
 		path: path,
 		name: name,
 		mws:  middleware.NewMWs(mws...),
@@ -105,7 +106,7 @@ func New(path, name string, opts Opts, mws ...Middleware) (h *Hippy, err error) 
 	h.rwtxp = sync.Pool{New: func() interface{} { return h.newReadWriteTx() }}
 
 	// Replay file data to populate the database
-	err = h.f.Read(h.replay)
+	err = h.replay()
 	return
 }
 
@@ -131,14 +132,122 @@ type Hippy struct {
 	closed bool // Closed state
 }
 
-func (h *Hippy) replay(fr *fileReader) (err error) {
-	var de bool // Data exists boolean
+// newLogLine will return a new log line given a provided key, action, and body
+func (h *Hippy) newLogLine(a byte, key string, b []byte) (out *bytes.Buffer, err error) {
+	var mw *middleware.Writer
+	// Get buffer from the buffer pool
+	out = bp.Get()
+
+	// Write action
+	if err = out.WriteByte(byte(a)); err != nil {
+		goto ERROR
+	}
+
+	// Get middleware writer
+	if mw, err = h.mws.Writer(out); err != nil {
+		goto ERROR
+	}
+
+	// Write key length
+	if _, err = mw.Write([]byte{uint8(len(key))}); err != nil {
+		goto ERROR
+	}
+
+	// Write key
+	if _, err = mw.Write([]byte(key)); err != nil {
+		goto ERROR
+	}
+
+	// If the action is not PUT, return
+	if a != _put {
+		goto END
+	}
+
+	// Write body
+	if _, err = mw.Write(b); err != nil {
+		goto ERROR
+	}
+
+END:
+	mw.Close()
+	return
+
+ERROR:
+	if mw != nil {
+		mw.Close()
+	}
+
+	bp.Put(out)
+	bp = nil
+	return
+}
+
+// parseLogLine will return an action, key, and body from a provided log line (in the form of a byte slice)
+func (h *Hippy) parseLogLine(in *bytes.Buffer) (a byte, key string, body []byte, err error) {
+	var (
+		b   []byte
+		i   uint8
+		kl  uint8 // Key length
+		rdr *middleware.Reader
+	)
+
+	if a, err = in.ReadByte(); err != nil {
+		return
+	}
+
+	// Validate action
+	switch a {
+	case _put, _del, _hash:
+	default:
+		// Invalid action, return ErrInvalidAction
+		err = ErrInvalidAction
+		return
+	}
+
+	if rdr, err = h.mws.Reader(in); err != nil {
+		return
+	}
+
+	buf := bp.Get()
+	if _, err = io.Copy(buf, rdr); err != nil {
+		goto END
+	}
+
+	b = buf.Bytes()
+	kl = uint8(b[i])
+	i++
+
+	key = string(b[i : i+kl])
+	i += kl
+
+	// If our action is not PUT, we do not need to parse any further
+	if a != _put {
+		goto END
+	}
+
+	b = b[i:]
+	body = make([]byte, len(b))
+	copy(body, b)
+
+END:
+	rdr.Close()
+	bp.Put(buf)
+	return
+}
+
+func (h *Hippy) replay() (err error) {
+	var (
+		a   byte
+		key string
+		val []byte
+		de  bool // Data exists boolean
+	)
 
 	h.mux.Lock()
-	// For each line..
-	fr.ReadLines(func(a byte, key string, val []byte, err error) error {
-		if err != nil {
-			return err
+	h.f.SeekToStart()
+	h.f.ReadLines(func(b *bytes.Buffer) (ok bool) {
+		if a, key, val, err = h.parseLogLine(b); err != nil {
+			return ok
 		}
 
 		// Fulfill action
@@ -151,19 +260,34 @@ func (h *Hippy) replay(fr *fileReader) (err error) {
 			// Delete by key
 			delete(h.s, key)
 		default:
-			return nil
+			return
 		}
 
 		// We know data exists, let's set de to true
 		de = true
-		return nil
+		return
 	})
 
-	if !de {
-		err = h.f.WriteLine(newHashLine())
+	if err == nil && !de {
+		h.newHashLine(h.f, "")
 	}
 
 	h.mux.Unlock()
+	return
+}
+
+func (h *Hippy) newHashLine(tgt *lineFile.File, hash string) (err error) {
+	var b *bytes.Buffer
+	if len(hash) == 0 {
+		hash = uuid.New().String()
+	}
+
+	if b, err = h.newLogLine(_hash, hash, nil); err != nil {
+		return
+	}
+
+	err = tgt.WriteLine(b.Bytes())
+	bp.Put(b)
 	return
 }
 
@@ -172,7 +296,9 @@ func (h *Hippy) replay(fr *fileReader) (err error) {
 func (h *Hippy) write(a map[string]action) (err error) {
 	var ll *bytes.Buffer
 	for k, v := range a {
-		ll = newLogLine(v.a, k, v.b)
+		if ll, err = h.newLogLine(v.a, k, v.b); err != nil {
+			return
+		}
 
 		// We are going to write before modifying memory
 		if err = h.f.WriteLine(ll.Bytes()); err != nil {
@@ -196,24 +322,127 @@ func (h *Hippy) write(a map[string]action) (err error) {
 	return h.f.Flush()
 }
 
+func (h *Hippy) seekToLastHash(tgt *lineFile.File) (err error) {
+	var pos int // Hash position
+	if pos, _, err = h.getLastHash(tgt); err != nil {
+		return
+	}
+
+	err = tgt.SeekToLine(pos)
+	return
+}
+
+func (h *Hippy) seekToHash(tgt *lineFile.File, hash string) (err error) {
+	var (
+		li  int // Line index
+		key string
+		pos = -1
+	)
+
+	if err = tgt.SeekToStart(); err != nil {
+		return
+	}
+
+	tgt.ReadLines(func(b *bytes.Buffer) (ok bool) {
+		bb := b.Bytes()
+		if bb[0] == _hash {
+			if _, key, _, err = h.parseLogLine(b); err != nil {
+				ok = true
+				return
+			}
+
+			if key == hash || len(hash) == 0 {
+				pos = li
+				ok = true
+			}
+		}
+
+		li++
+		return
+	})
+
+	if err != nil {
+		return
+	}
+
+	if pos == -1 {
+		err = ErrHashNotFound
+	} else {
+		err = tgt.SeekToLine(pos)
+	}
+	return
+}
+
+func (h *Hippy) getLastHash(tgt *lineFile.File) (pos int, hash string, err error) {
+	var li int // Line index
+	pos = -1
+	if err = tgt.SeekToStart(); err != nil {
+		return
+	}
+
+	tgt.ReadLines(func(b *bytes.Buffer) (ok bool) {
+		bb := b.Bytes()
+		if bb[0] == _hash {
+			pos = li
+			if _, hash, _, err = h.parseLogLine(b); err != nil {
+				ok = true
+				return
+			}
+		}
+
+		li++
+		return
+	})
+
+	if err == nil && pos == -1 {
+		err = ErrHashNotFound
+	}
+	return
+}
+
+func (h *Hippy) getArchivePoint() (hash string, err error) {
+	if _, hash, err = h.getLastHash(h.af); err != nil && err != ErrHashNotFound {
+		return
+	}
+
+	if err = h.seekToHash(h.f, hash); err != nil {
+		return
+	}
+
+	if err = h.f.NextLine(); err != nil {
+		err = ErrNoChanges
+	}
+
+	return
+}
+
 func (h *Hippy) archive() (err error) {
-	var n int64 // Written count
+	if err = h.f.Flush(); err != nil {
+		return
+	}
+
+	var hash string
+	if hash, err = h.getArchivePoint(); err != nil {
+		return
+	}
+
+	if err = h.f.SeekToEnd(); err != nil {
+		return
+	}
+
+	if err = h.newHashLine(h.f, ""); err != nil {
+		return
+	}
 
 	if err = h.f.Flush(); err != nil {
 		return
 	}
 
-	if err = h.f.SeekToLastHash(); err != nil {
+	if err = h.seekToHash(h.f, hash); err != nil {
 		return
 	}
 
-	if err = h.f.SeekToNextLine(); err != nil {
-		fmt.Println("Cannot seek to next line!", err)
-		return
-	}
-
-	if err = h.f.SeekToPrevLine(); err != nil {
-		fmt.Println("Cannot seek to prev line!", err)
+	if err = h.f.NextLine(); err != nil {
 		return
 	}
 
@@ -221,15 +450,7 @@ func (h *Hippy) archive() (err error) {
 		return
 	}
 
-	if n, err = io.Copy(h.af.f, h.f.f); err != nil || n == 0 {
-		return
-	}
-
-	if err = h.f.WriteLine(newHashLine()); err != nil {
-		return
-	}
-
-	if err = h.f.Flush(); err != nil {
+	if err = h.af.Append(h.f); err != nil {
 		return
 	}
 
@@ -237,24 +458,38 @@ func (h *Hippy) archive() (err error) {
 }
 
 func (h *Hippy) compact() (err error) {
-	var ll *bytes.Buffer
-	if err = h.tf.SetFile(); err != nil {
+	var (
+		hash string
+		ll   *bytes.Buffer
+	)
+
+	if _, hash, err = h.getLastHash(h.f); err != nil {
+		return
+	}
+
+	if err = h.tf.Open(); err != nil {
 		return
 	}
 
 	// Write data contents to tmp file
 	for k, v := range h.s {
-		ll = newLogLine(_put, k, v)
-		if err = h.tf.WriteLine(ll.Bytes()); err != nil {
-			return
+		if ll, err = h.newLogLine(_put, k, v); err != nil {
+			goto ITEREND
 		}
 
+		err = h.tf.WriteLine(ll.Bytes())
+
+	ITEREND:
 		bp.Put(ll)
 		ll = nil
+
+		if err != nil {
+			return
+		}
 	}
 
 	// Add our current hash to the end
-	if err = h.tf.WriteLine(newHashLine()); err != nil {
+	if err = h.newHashLine(h.tf, hash); err != nil {
 		return
 	}
 
@@ -266,11 +501,11 @@ func (h *Hippy) compact() (err error) {
 		return
 	}
 
-	if err = os.Rename(h.tfLoc, h.fLoc); err != nil {
+	if err = os.Rename(h.tf.Location(), h.f.Location()); err != nil {
 		return
 	}
 
-	if err = h.f.SetFile(); err != nil {
+	if err = h.f.Open(); err != nil {
 		return
 	}
 
@@ -411,17 +646,18 @@ func (h *Hippy) Close() (err error) {
 	h.closed = true
 
 	if h.opts.ArchiveOnClose {
-		if err = h.archive(); err != nil {
+		if err = h.archive(); err == ErrNoChanges {
+			err = nil
+		} else if err != nil {
 			goto END
 		}
 	}
 
 	if h.opts.CompactOnClose {
-		//	err = h.compact()
+		err = h.compact()
 	}
 
 END:
-	fmt.Println("Close complete!", err)
 	h.mux.Unlock()
 	return
 }

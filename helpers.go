@@ -1,11 +1,5 @@
 package hippy
 
-import (
-	"bytes"
-
-	"github.com/missionMeteora/uuid"
-)
-
 // action stores the action-type and body for a transaction item
 type action struct {
 	a byte
@@ -73,65 +67,6 @@ func (e ErrorList) Err() error {
 		return nil
 	}
 	return e
-}
-
-// newLogLine will return a new log line given a provided key, action, and body
-func newLogLine(a byte, key string, b []byte) (out *bytes.Buffer) {
-	// Get buffer from the buffer pool
-	out = bp.Get()
-	// Write action
-	out.WriteByte(byte(a))
-	// Write key length
-	out.WriteByte(uint8(len(key)))
-	// Write key
-	out.WriteString(key)
-
-	writeMWBytes()
-
-	// If the action is not PUT, return
-	if a != _put {
-		return
-	}
-
-	// Write body
-	out.Write(b)
-	return
-}
-
-func newHashLine() (out []byte) {
-	// Out is the length of a UUID (16), our prefix '# ' (2)
-	out = make([]byte, 18)
-	out[0] = _hash
-	out[1] = hashLen
-	copy(out[2:], []byte(uuid.New().String()))
-	return
-}
-
-// parseLogLine will return an action, key, and body from a provided log line (in the form of a byte slice)
-func parseLogLine(a byte, b []byte) (key string, body []byte, err error) {
-	// Validate action
-	switch a {
-	case _put, _del, _hash:
-	default:
-		// Invalid action, return ErrInvalidAction
-		err = ErrInvalidAction
-		return
-	}
-
-	var i uint8
-	keyLen := uint8(b[i])
-	i++
-
-	key = string(b[i : i+keyLen])
-	i += keyLen
-
-	// If our action is not PUT, we do not need to parse any further
-	if a != _put {
-		return
-	}
-
-	body = b[i:]
-	return
 }
 
 func reverseByteSlice(bs []byte) {
