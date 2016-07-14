@@ -65,7 +65,7 @@ var (
 // New returns a new Hippy
 func New(path, name string, opts Opts, mws ...middleware.Middleware) (h *Hippy, err error) {
 	// Append Base64 encoding to the end of the middleware chain. This will ensure that we do not have breaking characters within our saved data
-	//mws = append(mws, middleware.Base64MW{})
+	mws = append(mws, middleware.Base64MW{})
 
 	// Create Hippy, he doesn't smell.. quite yet.
 	hip := Hippy{
@@ -344,8 +344,9 @@ func (h *Hippy) seekToHash(tgt *lineFile.File, hash string) (err error) {
 	}
 
 	tgt.ReadLines(func(b *bytes.Buffer) (ok bool) {
-		bb := b.Bytes()
-		if bb[0] == _hash {
+		if bb := b.Bytes(); len(bb) == 0 {
+			return
+		} else if bb[0] == _hash {
 			if _, key, _, err = h.parseLogLine(b); err != nil {
 				ok = true
 				return
