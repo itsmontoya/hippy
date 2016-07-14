@@ -11,6 +11,7 @@ import (
 	//"time"
 
 	"github.com/boltdb/bolt"
+	"github.com/itsmontoya/middleware"
 )
 
 var (
@@ -124,7 +125,7 @@ func TestMWBasic(t *testing.T) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "basicMW_test", opts, GZipMW{}); err != nil {
+	if db, err = New(tmpPath, "basicMW_test", opts, middleware.GZipMW{}); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -219,7 +220,7 @@ func BenchmarkGzipHippy(b *testing.B) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "gzip", opts, GZipMW{}); err != nil {
+	if db, err = New(tmpPath, "gzip", opts, middleware.GZipMW{}); err != nil {
 		b.Error("Error opening:", err)
 		return
 	}
@@ -245,7 +246,7 @@ func BenchmarkCryptyHippy(b *testing.B) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "crypty", opts, NewCryptyMW(cryptyKey, cryptyIV)); err != nil {
+	if db, err = New(tmpPath, "crypty", opts, middleware.NewCryptyMW(cryptyKey, cryptyIV)); err != nil {
 		b.Error("Error opening:", err)
 		return
 	}
