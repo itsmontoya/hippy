@@ -28,8 +28,19 @@ func NewOpts(src interface{}) (o Opts, err error) {
 	return
 }
 
+// NewDefaultOpts will return simple default options
+func NewDefaultOpts(path, name string) (o Opts) {
+	o = defaultOptions
+	o.Path = path
+	o.Name = name
+	return
+}
+
 // Opts are options for Hippy
 type Opts struct {
+	Path string `ini:"path"`
+	Name string `ini:"name"`
+
 	CopyOnWrite bool `ini:"copyOnWrite"`
 	CopyOnRead  bool `ini:"copyOnRead"`
 

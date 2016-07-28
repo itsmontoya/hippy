@@ -2,6 +2,27 @@ package hippy
 
 import "sync"
 
+// RTx is a read transaction interface
+type RTx interface {
+	Get(k string) (v interface{}, ok bool)
+	Keys() (ks []string)
+}
+
+// WTx is a write transaction interface
+type WTx interface {
+	Put(k string, v interface{}) (err error)
+	Del(k string)
+	Keys() (ks []string)
+}
+
+// RWTx is a read-write transaction interface
+type RWTx interface {
+	Get(k string) (v interface{}, ok bool)
+	Put(k string, v interface{}) (err error)
+	Del(k string)
+	Keys() (ks []string)
+}
+
 // ReadTx is a read-only transaction
 type ReadTx struct {
 	// Pointer to our DB's internal store
@@ -9,23 +30,24 @@ type ReadTx struct {
 }
 
 // Get will get a body and an ok value
-func (r *ReadTx) Get(k string) (b []byte, ok bool) {
-	var tgt []byte
+func (r *ReadTx) Get(k string) (v interface{}, ok bool) {
 	// Get a non-pointer reference to storage
-	if tgt, ok = r.h.s[k]; !ok {
+	if v, ok = r.h.s[k]; !ok {
 		// Target does not exist, return
 		return
 	}
 
-	if !r.h.opts.CopyOnRead {
-		b = tgt
-		return
-	}
+	/*
+		if !r.h.opts.CopyOnRead {
+			b = tgt
+			return
+		}
 
-	// Pre-allocate b to be the length of target
-	b = make([]byte, len(tgt))
-	// Copy target to b
-	copy(b, tgt)
+		// Pre-allocate b to be the length of target
+		b = make([]byte, len(tgt))
+		// Copy target to b
+		copy(b, tgt)
+	*/
 	return
 }
 
@@ -53,19 +75,15 @@ type ReadWriteTx struct {
 }
 
 // Get will get a body and an ok value
-func (rw *ReadWriteTx) Get(k string) (b []byte, ok bool) {
-	var (
-		ta  action
-		tgt []byte
-	)
+func (rw *ReadWriteTx) Get(k string) (v interface{}, ok bool) {
+	var ta action
 
 	rw.mux.RLock()
 	// If action exists for this key..
 	if ta, ok = rw.a[k]; ok {
 		// If action is PUT, set our target to the action body and goto copy
 		if ta.a == _put {
-			tgt = ta.b
-			goto COPY
+			v = ta.v
 		}
 
 		// Action was DELETE, set ok to false and goto end
@@ -74,21 +92,10 @@ func (rw *ReadWriteTx) Get(k string) (b []byte, ok bool) {
 	}
 
 	// Get a non-pointer reference to storage
-	if tgt, ok = rw.h.s[k]; !ok {
+	if v, ok = rw.h.s[k]; !ok {
 		// Target does not exist, goto end
 		goto END
 	}
-
-COPY:
-	if !rw.h.opts.CopyOnRead {
-		b = tgt
-		goto END
-	}
-
-	// Pre-allocate b to be the length of target
-	b = make([]byte, len(tgt))
-	// Copy target to b
-	copy(b, tgt)
 
 END:
 	rw.mux.RUnlock()
@@ -97,26 +104,27 @@ END:
 }
 
 // Put will put
-func (rw *ReadWriteTx) Put(k string, v []byte) (err error) {
+func (rw *ReadWriteTx) Put(k string, v interface{}) (err error) {
 	if len(k) > MaxKeyLen {
 		return ErrInvalidKey
 	}
 
 	// Create action
-	act := action{a: _put}
+	act := action{a: _put, v: v}
 	rw.mux.Lock()
-	if !rw.h.opts.CopyOnWrite {
-		// Set action body to value and goto the end
-		act.b = v
-		goto END
-	}
+	/*
+		Maybe add a Copy func to make COW and COR avail
+		if !rw.h.opts.CopyOnWrite {
+			// Set action body to value and goto the end
+			act.b = v
+			goto END
+		}
 
-	// Pre-allocate action body to be the length of value
-	act.b = make([]byte, len(v))
-	// Copy value to action body
-	copy(act.b, v)
-
-END:
+		// Pre-allocate action body to be the length of value
+		act.b = make([]byte, len(v))
+		// Copy value to action body
+		copy(act.b, v)
+	*/
 	rw.a[k] = act
 	rw.mux.Unlock()
 	return
@@ -153,7 +161,7 @@ type WriteTx struct {
 }
 
 // Put will put
-func (w *WriteTx) Put(k string, v []byte) (err error) {
+func (w *WriteTx) Put(k string, v interface{}) (err error) {
 	if len(k) > MaxKeyLen {
 		return ErrInvalidKey
 	}
@@ -162,7 +170,7 @@ func (w *WriteTx) Put(k string, v []byte) (err error) {
 	// Set a put action with the body
 	w.a[k] = action{
 		a: _put,
-		b: v,
+		v: v,
 	}
 	w.mux.Unlock()
 	return

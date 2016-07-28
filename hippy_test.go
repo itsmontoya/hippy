@@ -1,7 +1,8 @@
 package hippy
 
 import (
-	"errors"
+	"encoding/json"
+	//"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -31,7 +32,24 @@ var (
 
 	cryptyKey = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
 	cryptyIV  = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+
+	vv = NewValue(
+		func(v interface{}) (b []byte, err error) {
+			return json.Marshal(v)
+		},
+		func(b []byte) (v interface{}, err error) {
+			var sa ShitYa
+			err = json.Unmarshal(b, &sa)
+			v = sa
+			return
+		},
+	)
 )
+
+type ShitYa struct {
+	Name string
+	DOB  string
+}
 
 func getKeysB(keys []string) (out [][]byte) {
 	for _, v := range keys {
@@ -52,7 +70,7 @@ func TestMain(m *testing.M) {
 
 	tmpPath = "testing"
 
-	if db, err = New(tmpPath, "test", opts); err != nil {
+	if db, err = New(tmpPath, "test", opts, vv); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -109,7 +127,7 @@ func TestBasic(t *testing.T) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "basic_test", opts); err != nil {
+	if db, err = New(tmpPath, "basic_test", opts, vv); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -125,7 +143,7 @@ func TestMWBasic(t *testing.T) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "basicMW_test", opts, middleware.GZipMW{}); err != nil {
+	if db, err = New(tmpPath, "basicMW_test", opts, vv, middleware.GZipMW{}); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
@@ -141,27 +159,30 @@ func TestMedium(t *testing.T) {
 		ok  bool
 		db  *Hippy
 		err error
+
+		v interface{}
 	)
 
-	if db, err = New(tmpPath, "medium_test", opts); err != nil {
+	if db, err = New(tmpPath, "medium_test", opts, vv); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
 
 	db.ReadWrite(func(txn *ReadWriteTx) (err error) {
-		b, ok = txn.Get("greeting")
+		v, _ = txn.Get("greeting")
+		b, ok = v.([]byte)
 		//	fmt.Println(string(b), ok)
 
 		txn.Put("greeting", []byte(`Hello!`))
-		b, ok = txn.Get("greeting")
+		v, ok = txn.Get("greeting")
 		return
 	})
 
-	db.ReadWrite(func(txn *ReadWriteTx) (err error) {
-		txn.Put("greeting", []byte("NO!!"))
-		b, ok = txn.Get("greeting")
-		return errors.New("Merp")
-	})
+	//db.ReadWrite(func(txn *ReadWriteTx) (err error) {
+	//	txn.Put("greeting", []byte("NO!!"))
+	//	b, ok = txn.Get("greeting")
+	//	return errors.New("Merp")
+	//	})
 
 	db.ReadWrite(func(txn *ReadWriteTx) (err error) {
 		if _, ok = txn.Get("greeting"); !ok {
@@ -220,7 +241,7 @@ func BenchmarkGzipHippy(b *testing.B) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "gzip", opts, middleware.GZipMW{}); err != nil {
+	if db, err = New(tmpPath, "gzip", opts, vv, middleware.GZipMW{}); err != nil {
 		b.Error("Error opening:", err)
 		return
 	}
@@ -246,7 +267,7 @@ func BenchmarkCryptyHippy(b *testing.B) {
 		err error
 	)
 
-	if db, err = New(tmpPath, "crypty", opts, middleware.NewCryptyMW(cryptyKey, cryptyIV)); err != nil {
+	if db, err = New(tmpPath, "crypty", opts, vv, middleware.NewCryptyMW(cryptyKey, cryptyIV)); err != nil {
 		b.Error("Error opening:", err)
 		return
 	}
@@ -336,12 +357,22 @@ func BenchmarkAllGetBolt(b *testing.B) {
 }
 
 func hippyRW(db *Hippy, iter int) (err error) {
-	var bb []byte
+	var (
+		v interface{}
+	)
+
+	sa := ShitYa{
+		Name: "Tali",
+		DOB:  "03-16-89",
+	}
+
 	return db.ReadWrite(func(txn *ReadWriteTx) (err error) {
 		for i := 0; i < iter; i++ {
 			for _, k := range testKeys {
-				txn.Put(k, testVal)
-				bb, _ = txn.Get(k)
+				txn.Put(k, sa)
+				v, _ = txn.Get(k)
+
+				fmt.Println(v)
 			}
 		}
 		return
@@ -349,11 +380,17 @@ func hippyRW(db *Hippy, iter int) (err error) {
 }
 
 func hippyR(db *Hippy, iter int) (err error) {
-	var bb []byte
+	var (
+		bb []byte
+		ok bool
+		v  interface{}
+	)
+
 	return db.Read(func(txn *ReadTx) (err error) {
 		for i := 0; i < iter; i++ {
 			for _, k := range testKeys {
-				bb, _ = txn.Get(k)
+				v, _ = txn.Get(k)
+				bb, ok = v.([]byte)
 			}
 		}
 		return

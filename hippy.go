@@ -63,24 +63,24 @@ var (
 )
 
 // New returns a new Hippy
-func New(path, name string, opts Opts, mws ...middleware.Middleware) (h *Hippy, err error) {
+func New(opts Opts, mfn MarshalFn, ufn UnmarshalFn, mws ...middleware.Middleware) (h *Hippy, err error) {
 	// Append Base64 encoding to the end of the middleware chain. This will ensure that we do not have breaking characters within our saved data
 	mws = append(mws, middleware.Base64MW{})
 
 	// Create Hippy, he doesn't smell.. quite yet.
 	hip := Hippy{
-		// Make the internal storage map, it would be a shame to panic on put!
-		s:    make(storage),
-		path: path,
-		name: name,
-		mws:  middleware.NewMWs(mws...),
 		opts: opts,
+		mfn:  mfn,
+		ufn:  ufn,
+
+		s:   make(storage),
+		mws: middleware.NewMWs(mws...),
 	}
 
 	// Open persistance file
 	lfopts := lineFile.Opts{
-		Path: path,
-		Name: name,
+		Path: opts.Path,
+		Name: opts.Name,
 		Ext:  "hdb",
 	}
 
@@ -88,12 +88,12 @@ func New(path, name string, opts Opts, mws ...middleware.Middleware) (h *Hippy, 
 		return
 	}
 
-	lfopts.Name = name + ".archive"
+	lfopts.Name = opts.Name + ".archive"
 	if hip.af, err = lineFile.New(lfopts); err != nil {
 		return
 	}
 
-	lfopts.Name = name + ".tmp"
+	lfopts.Name = opts.Name + ".tmp"
 	lfopts.NoSet = true
 	if hip.tf, err = lineFile.New(lfopts); err != nil {
 		return
@@ -114,9 +114,9 @@ func New(path, name string, opts Opts, mws ...middleware.Middleware) (h *Hippy, 
 type Hippy struct {
 	mux sync.RWMutex
 
-	path string // Database path
-	name string // Database name
-	opts Opts   // Options
+	opts Opts // Options
+	mfn  MarshalFn
+	ufn  UnmarshalFn
 
 	s   storage         // In-memory storage
 	mws *middleware.MWs // Middlewares
@@ -133,8 +133,12 @@ type Hippy struct {
 }
 
 // newLogLine will return a new log line given a provided key, action, and body
-func (h *Hippy) newLogLine(a byte, key string, b []byte) (out *bytes.Buffer, err error) {
-	var mw *middleware.Writer
+func (h *Hippy) newLogLine(a byte, key string, v interface{}) (out *bytes.Buffer, err error) {
+	var (
+		mw *middleware.Writer
+		b  []byte
+	)
+
 	// Get buffer from the buffer pool
 	out = bp.Get()
 
@@ -161,6 +165,10 @@ func (h *Hippy) newLogLine(a byte, key string, b []byte) (out *bytes.Buffer, err
 	// If the action is not PUT, return
 	if a != _put {
 		goto END
+	}
+
+	if b, err = h.mfn(v); err != nil {
+		goto ERROR
 	}
 
 	// Write body
@@ -240,6 +248,7 @@ func (h *Hippy) replay() (err error) {
 		a   byte
 		key string
 		val []byte
+		v   interface{}
 		de  bool // Data exists boolean
 	)
 
@@ -255,7 +264,11 @@ func (h *Hippy) replay() (err error) {
 		case _hash:
 		case _put:
 			// Put value by key
-			h.s[key] = val
+			if v, err = h.ufn(val); err != nil {
+				return
+			}
+
+			h.s[key] = v
 		case _del:
 			// Delete by key
 			delete(h.s, key)
@@ -296,7 +309,7 @@ func (h *Hippy) newHashLine(tgt *lineFile.File, hash string) (err error) {
 func (h *Hippy) write(a map[string]action) (err error) {
 	var ll *bytes.Buffer
 	for k, v := range a {
-		if ll, err = h.newLogLine(v.a, k, v.b); err != nil {
+		if ll, err = h.newLogLine(v.a, k, v.v); err != nil {
 			return
 		}
 
@@ -312,7 +325,7 @@ func (h *Hippy) write(a map[string]action) (err error) {
 		switch v.a {
 		case _put:
 			// Put by key
-			h.s[k] = v.b
+			h.s[k] = v.v
 		case _del:
 			// Delete by key
 			delete(h.s, k)

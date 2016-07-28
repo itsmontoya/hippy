@@ -1,12 +1,18 @@
 package hippy
 
+// MarshalFn is the marshaling func used by Value
+type MarshalFn func(interface{}) ([]byte, error)
+
+// UnmarshalFn is the unmarshaling func used by Value
+type UnmarshalFn func([]byte) (interface{}, error)
+
 // action stores the action-type and body for a transaction item
 type action struct {
 	a byte
-	b []byte
+	v interface{}
 }
 
-type storage map[string][]byte
+type storage map[string]interface{}
 
 // Error is a simple error type which is able to be stored as a const, rather than a global var
 type Error string
