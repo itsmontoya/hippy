@@ -1,5 +1,13 @@
 package hippy
 
+type txn uint8
+
+const (
+	rTxn txn = iota
+	rwTxn
+	wTxn
+)
+
 // MarshalFn is the marshaling func used by Value
 type MarshalFn func(interface{}) ([]byte, error)
 
@@ -12,7 +20,7 @@ type action struct {
 	v interface{}
 }
 
-type storage map[string]interface{}
+type storage map[string]*Bucket
 
 // Error is a simple error type which is able to be stored as a const, rather than a global var
 type Error string

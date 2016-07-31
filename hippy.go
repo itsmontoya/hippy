@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 
+	"fmt"
+
 	"github.com/itsmontoya/lineFile"
 	"github.com/itsmontoya/middleware"
 	"github.com/missionMeteora/toolkit/bufferPool"
@@ -54,6 +56,12 @@ const (
 
 	// ErrNoChanges is returned when no changes occur and an archive is not needed
 	ErrNoChanges = errors.Error("no changes occured, archive not necessary")
+
+	// ErrInvalidTxnType is returned when an invalid transaction type is used
+	ErrInvalidTxnType = errors.Error("cannot perform requested action using this transaction type")
+
+	// ErrCannotCreateBucket is returned when a bucket cannot be created
+	ErrCannotCreateBucket = errors.Error("cannot create bucket")
 )
 
 var (
@@ -73,8 +81,8 @@ func New(opts Opts, mfn MarshalFn, ufn UnmarshalFn, mws ...middleware.Middleware
 		mfn:  mfn,
 		ufn:  ufn,
 
-		s:   make(storage),
-		mws: middleware.NewMWs(mws...),
+		root: &Bucket{m: make(map[string]interface{})},
+		mws:  middleware.NewMWs(mws...),
 	}
 
 	// Open persistance file
@@ -118,8 +126,8 @@ type Hippy struct {
 	mfn  MarshalFn
 	ufn  UnmarshalFn
 
-	s   storage         // In-memory storage
-	mws *middleware.MWs // Middlewares
+	root *Bucket         // Root bucket
+	mws  *middleware.MWs // Middlewares
 
 	f  *lineFile.File // Persistent storage
 	af *lineFile.File // Archive file
@@ -133,12 +141,8 @@ type Hippy struct {
 }
 
 // newLogLine will return a new log line given a provided key, action, and body
-func (h *Hippy) newLogLine(a byte, key string, v interface{}) (out *bytes.Buffer, err error) {
-	var (
-		mw *middleware.Writer
-		b  []byte
-	)
-
+func (h *Hippy) newLogLine(a byte, keys []string, body []byte) (out *bytes.Buffer, err error) {
+	var mw *middleware.Writer
 	// Get buffer from the buffer pool
 	out = bp.Get()
 
@@ -152,14 +156,21 @@ func (h *Hippy) newLogLine(a byte, key string, v interface{}) (out *bytes.Buffer
 		goto ERROR
 	}
 
-	// Write key length
-	if _, err = mw.Write([]byte{uint8(len(key))}); err != nil {
+	// Write key count
+	if _, err = mw.Write([]byte{uint8(len(keys))}); err != nil {
 		goto ERROR
 	}
 
-	// Write key
-	if _, err = mw.Write([]byte(key)); err != nil {
-		goto ERROR
+	for _, key := range keys {
+		// Write key length
+		if _, err = mw.Write([]byte{uint8(len(key))}); err != nil {
+			goto ERROR
+		}
+
+		// Write key
+		if _, err = mw.Write([]byte(key)); err != nil {
+			goto ERROR
+		}
 	}
 
 	// If the action is not PUT, return
@@ -167,12 +178,8 @@ func (h *Hippy) newLogLine(a byte, key string, v interface{}) (out *bytes.Buffer
 		goto END
 	}
 
-	if b, err = h.mfn(v); err != nil {
-		goto ERROR
-	}
-
 	// Write body
-	if _, err = mw.Write(b); err != nil {
+	if _, err = mw.Write(body); err != nil {
 		goto ERROR
 	}
 
@@ -191,10 +198,11 @@ ERROR:
 }
 
 // parseLogLine will return an action, key, and body from a provided log line (in the form of a byte slice)
-func (h *Hippy) parseLogLine(in *bytes.Buffer) (a byte, key string, body []byte, err error) {
+func (h *Hippy) parseLogLine(in *bytes.Buffer) (a byte, keys []string, body []byte, err error) {
 	var (
 		b   []byte
 		i   uint8
+		kc  uint8 // Key count
 		kl  uint8 // Key length
 		rdr *middleware.Reader
 	)
@@ -222,11 +230,16 @@ func (h *Hippy) parseLogLine(in *bytes.Buffer) (a byte, key string, body []byte,
 	}
 
 	b = buf.Bytes()
-	kl = uint8(b[i])
+	kc = uint8(b[i])
 	i++
 
-	key = string(b[i : i+kl])
-	i += kl
+	for j := uint8(0); j < kc; j++ {
+		kl = uint8(b[i])
+		i++
+
+		keys = append(keys, string(b[i:i+kl]))
+		i += kl
+	}
 
 	// If our action is not PUT, we do not need to parse any further
 	if a != _put {
@@ -245,18 +258,30 @@ END:
 
 func (h *Hippy) replay() (err error) {
 	var (
-		a   byte
-		key string
-		val []byte
-		v   interface{}
-		de  bool // Data exists boolean
+		a    byte
+		keys []string
+		val  []byte
+		v    interface{}
+		bkt  *Bucket
+		de   bool // Data exists boolean
 	)
 
 	h.mux.Lock()
 	h.f.SeekToStart()
 	h.f.ReadLines(func(b *bytes.Buffer) (ok bool) {
-		if a, key, val, err = h.parseLogLine(b); err != nil {
-			return ok
+		fmt.Println("About to parse line")
+		if a, keys, val, err = h.parseLogLine(b); err != nil {
+			fmt.Println("Parse error", err)
+			ok = true
+			return
+		}
+
+		fmt.Println("Wooo line!", a, keys, val)
+
+		ki := len(keys) - 1
+		if bkt, err = h.root.createBucket(keys[:ki]); err != nil {
+			fmt.Println("Error creating bucket during replay", err)
+			return
 		}
 
 		// Fulfill action
@@ -268,10 +293,10 @@ func (h *Hippy) replay() (err error) {
 				return
 			}
 
-			h.s[key] = v
+			bkt.m[keys[ki]] = v
 		case _del:
 			// Delete by key
-			delete(h.s, key)
+			delete(bkt.m, keys[ki])
 		default:
 			return
 		}
@@ -285,6 +310,7 @@ func (h *Hippy) replay() (err error) {
 		h.newHashLine(h.f, "")
 	}
 
+	fmt.Println("Replayed!", h.root.m["main"])
 	h.mux.Unlock()
 	return
 }
@@ -295,7 +321,7 @@ func (h *Hippy) newHashLine(tgt *lineFile.File, hash string) (err error) {
 		hash = uuid.New().String()
 	}
 
-	if b, err = h.newLogLine(_hash, hash, nil); err != nil {
+	if b, err = h.newLogLine(_hash, []string{hash}, nil); err != nil {
 		return
 	}
 
@@ -304,31 +330,102 @@ func (h *Hippy) newHashLine(tgt *lineFile.File, hash string) (err error) {
 	return
 }
 
+func getBuckets(b *Bucket) (bkts []*Bucket) {
+	var (
+		bkt *Bucket
+		ok  bool
+	)
+
+	fmt.Println("Getting buckets", b.keys, b.m)
+	for _, v := range b.m {
+		if bkt, ok = v.(*Bucket); !ok {
+			continue
+		}
+
+		bkts = append(bkts, getBuckets(bkt)...)
+	}
+
+	bkts = append(bkts, b)
+	fmt.Println("Buckets", bkts)
+	return
+}
+
+func getActions(b *Bucket) (acts map[string]action) {
+	var (
+		a  action
+		ok bool
+	)
+
+	acts = make(map[string]action, len(b.m))
+	for k, v := range b.m {
+		if a, ok = v.(action); !ok {
+			continue
+		}
+
+		acts[k] = a
+	}
+
+	return
+}
+
 // write will write a transaction to disk
 // Note: This is not thread safe. It is expected that the calling function is managing locks
-func (h *Hippy) write(a map[string]action) (err error) {
-	var ll *bytes.Buffer
-	for k, v := range a {
-		if ll, err = h.newLogLine(v.a, k, v.v); err != nil {
-			return
-		}
+func (h *Hippy) write(actions *Bucket) (err error) {
+	fmt.Println("\n\nWRITE BEING CALLED\n\n ")
+	var (
+		ll   *bytes.Buffer
+		rbkt *Bucket
+		body []byte
+	)
 
-		// We are going to write before modifying memory
-		if err = h.f.WriteLine(ll.Bytes()); err != nil {
-			return
-		}
+	txn := h.getReadWriteTx()
+	txn.a = h.root
 
-		bp.Put(ll)
-		ll = nil
+	for _, bkt := range getBuckets(actions) {
+		fmt.Println("\nOh bkt?", bkt.keys)
+		for k, a := range getActions(bkt) {
+			if body, err = bkt.mfn(a.v); err != nil {
+				return
+			}
 
-		// Fulfill action
-		switch v.a {
-		case _put:
-			// Put by key
-			h.s[k] = v.v
-		case _del:
-			// Delete by key
-			delete(h.s, k)
+			if ll, err = h.newLogLine(a.a, append(bkt.keys, k), body); err != nil {
+				return
+			}
+
+			// We are going to write before modifying memory
+			if err = h.f.WriteLine(ll.Bytes()); err != nil {
+				return
+			}
+
+			bp.Put(ll)
+			ll = nil
+
+			fmt.Println("About to get root-origin bucket", bkt.keys)
+			if rbkt, err = h.root.createBucket(bkt.keys); err != nil {
+				fmt.Println("Error?", err)
+				return
+			}
+
+			rbkt.txn = txn
+
+			fmt.Println("We have gotten root-origin bucket", rbkt, bkt)
+			if rbkt.mfn == nil {
+				rbkt.mfn = bkt.mfn
+				rbkt.ufn = bkt.ufn
+			}
+
+			// Fulfill action
+			switch a.a {
+			case _put:
+				// Put by key
+				rbkt.Put(k, a.v)
+			case _del:
+				// Delete by key
+				rbkt.Del(k)
+			}
+
+			rbkt.txn = nil
+			fmt.Println("Root-origin bucket", rbkt)
 		}
 	}
 
@@ -347,9 +444,9 @@ func (h *Hippy) seekToLastHash(tgt *lineFile.File) (err error) {
 
 func (h *Hippy) seekToHash(tgt *lineFile.File, hash string) (err error) {
 	var (
-		li  int // Line index
-		key string
-		pos = -1
+		li   int // Line index
+		keys []string
+		pos  = -1
 	)
 
 	if err = tgt.SeekToStart(); err != nil {
@@ -360,12 +457,12 @@ func (h *Hippy) seekToHash(tgt *lineFile.File, hash string) (err error) {
 		if bb := b.Bytes(); len(bb) == 0 {
 			return
 		} else if bb[0] == _hash {
-			if _, key, _, err = h.parseLogLine(b); err != nil {
+			if _, keys, _, err = h.parseLogLine(b); err != nil {
 				ok = true
 				return
 			}
 
-			if key == hash || len(hash) == 0 {
+			if keys[0] == hash || len(hash) == 0 {
 				pos = li
 				ok = true
 			}
@@ -388,7 +485,11 @@ func (h *Hippy) seekToHash(tgt *lineFile.File, hash string) (err error) {
 }
 
 func (h *Hippy) getLastHash(tgt *lineFile.File) (pos int, hash string, err error) {
-	var li int // Line index
+	var (
+		li   int // Line index
+		keys []string
+	)
+
 	pos = -1
 	if err = tgt.SeekToStart(); err != nil {
 		return
@@ -398,10 +499,12 @@ func (h *Hippy) getLastHash(tgt *lineFile.File) (pos int, hash string, err error
 		bb := b.Bytes()
 		if bb[0] == _hash {
 			pos = li
-			if _, hash, _, err = h.parseLogLine(b); err != nil {
+			if _, keys, _, err = h.parseLogLine(b); err != nil {
 				ok = true
 				return
 			}
+
+			hash = keys[0]
 		}
 
 		li++
@@ -431,6 +534,7 @@ func (h *Hippy) getArchivePoint() (hash string, err error) {
 }
 
 func (h *Hippy) archive() (err error) {
+	fmt.Println("ARCHIVING")
 	if err = h.f.Flush(); err != nil {
 		return
 	}
@@ -472,9 +576,10 @@ func (h *Hippy) archive() (err error) {
 }
 
 func (h *Hippy) compact() (err error) {
+	fmt.Println("COMPACTING")
 	var (
 		hash string
-		ll   *bytes.Buffer
+	//	ll   *bytes.Buffer
 	)
 
 	if _, hash, err = h.getLastHash(h.f); err != nil {
@@ -486,22 +591,23 @@ func (h *Hippy) compact() (err error) {
 	}
 
 	// Write data contents to tmp file
-	for k, v := range h.s {
-		if ll, err = h.newLogLine(_put, k, v); err != nil {
-			goto ITEREND
+	/*
+		for k, v := range h.s {
+			if ll, err = h.newLogLine(_put, k, v); err != nil {
+				goto ITEREND
+			}
+
+			err = h.tf.WriteLine(ll.Bytes())
+
+		ITEREND:
+			bp.Put(ll)
+			ll = nil
+
+			if err != nil {
+				return
+			}
 		}
-
-		err = h.tf.WriteLine(ll.Bytes())
-
-	ITEREND:
-		bp.Put(ll)
-		ll = nil
-
-		if err != nil {
-			return
-		}
-	}
-
+	*/
 	// Add our current hash to the end
 	if err = h.newHashLine(h.tf, hash); err != nil {
 		return
@@ -535,16 +641,23 @@ func (h *Hippy) newReadTx() *ReadTx {
 // newWriteTx returns a new write transaction, used by write transaction pool
 func (h *Hippy) newWriteTx() *WriteTx {
 	return &WriteTx{
-		a: make(map[string]action),
+		a: &Bucket{
+			m: make(map[string]interface{}),
+		},
 	}
 }
 
 // newReadWriteTx returns a new read/write transaction, used by read/write transaction pool
-func (h *Hippy) newReadWriteTx() *ReadWriteTx {
-	return &ReadWriteTx{
+func (h *Hippy) newReadWriteTx() (rw *ReadWriteTx) {
+	rw = &ReadWriteTx{
 		h: h,
-		a: make(map[string]action),
+		a: &Bucket{
+			m: make(map[string]interface{}),
+		},
 	}
+
+	rw.a.txn = rw
+	return
 }
 
 // getReadTx returns a new read transaction from the read transaction pool
@@ -572,8 +685,8 @@ func (h *Hippy) putReadTx(tx *ReadTx) {
 
 // putWriteTx releases a write transaction back to the write transaction pool
 func (h *Hippy) putWriteTx(tx *WriteTx) {
-	for k := range tx.a {
-		delete(tx.a, k)
+	for k := range tx.a.m {
+		delete(tx.a.m, k)
 	}
 
 	h.wtxp.Put(tx)
@@ -581,8 +694,8 @@ func (h *Hippy) putWriteTx(tx *WriteTx) {
 
 // putReadWriteTx releases a read/write transaction back to the read/write transaction pool
 func (h *Hippy) putReadWriteTx(tx *ReadWriteTx) {
-	for k := range tx.a {
-		delete(tx.a, k)
+	for k := range tx.a.m {
+		delete(tx.a.m, k)
 	}
 
 	h.rwtxp.Put(tx)
@@ -652,6 +765,7 @@ END:
 
 // Close will close Hippy
 func (h *Hippy) Close() (err error) {
+	return
 	h.mux.Lock()
 	if h.closed {
 		err = ErrIsClosed

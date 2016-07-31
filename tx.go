@@ -1,6 +1,7 @@
 package hippy
 
 import "sync"
+import "fmt"
 
 // RTx is a read transaction interface
 type RTx interface {
@@ -30,38 +31,63 @@ type ReadTx struct {
 }
 
 // Get will get a body and an ok value
-func (r *ReadTx) Get(k string) (v interface{}, ok bool) {
-	// Get a non-pointer reference to storage
-	if v, ok = r.h.s[k]; !ok {
-		// Target does not exist, return
+func (r *ReadTx) get(keys []string) (v interface{}) {
+	var (
+		bkt *Bucket
+		ok  bool
+
+		ki = len(keys) - 1 // Key index
+		k  = keys[ki]      // Key
+	)
+
+	// We are going to retreive the bucket with matching keys
+	// Note: We omit the last key, as this is for the value - rather than the buckets!
+	if bkt = r.h.root.bucket(keys[:ki]); bkt == nil {
+		// Nothing was found, return!
 		return
 	}
 
-	/*
-		if !r.h.opts.CopyOnRead {
-			b = tgt
-			return
-		}
-
-		// Pre-allocate b to be the length of target
-		b = make([]byte, len(tgt))
-		// Copy target to b
-		copy(b, tgt)
-	*/
-	return
-}
-
-// Keys will list the keys for a DB
-func (r *ReadTx) Keys() (keys []string) {
-	// Pre-allocate keys to be the length of our internal storage
-	keys = make([]string, 0, len(r.h.s))
-
-	// For each item in our internal storage, append key to keys
-	for k := range r.h.s {
-		keys = append(keys, k)
+	// Try to get value at bucket matching our key
+	if v, ok = bkt.m[k]; !ok {
+		// Value was not found for this key, set v to nil
+		v = nil
 	}
 
 	return
+
+}
+
+// Keys will list the keys for a DB
+func (r *ReadTx) keys(keys []string) (out []string) {
+	var (
+		bkt *Bucket
+		om  = make(map[string]struct{}) // Out map, used for tracking keys
+	)
+
+	// Get bucket matching provided keys from root
+	if bkt = r.h.root.bucket(keys); bkt == nil {
+		// No match exists, jump to the transaction lookup
+		return
+	}
+
+	// Iterate through bucket's map keys, set out map with each iteration
+	for k := range bkt.m {
+		om[k] = struct{}{}
+	}
+
+	// Make our outbound slice with a capacity as the length of our out map
+	out = make([]string, 0, len(om))
+
+	for k := range om {
+		out = append(out, k)
+	}
+
+	return
+}
+
+// Bucket will retrieve a bucket
+func (r *ReadTx) Bucket(keys ...string) (bkt *Bucket) {
+	return r.h.root.bucket(keys)
 }
 
 // ReadWriteTx is a read/write transaction
@@ -70,31 +96,65 @@ type ReadWriteTx struct {
 
 	// Pointer to our DB's internal store
 	h *Hippy
-	// Actions map
-	a map[string]action
+
+	// Actions
+	a *Bucket
 }
 
 // Get will get a body and an ok value
-func (rw *ReadWriteTx) Get(k string) (v interface{}, ok bool) {
-	var ta action
+func (rw *ReadWriteTx) get(keys []string) (v interface{}) {
+	var (
+		ta  action
+		bkt *Bucket
+		ok  bool
 
+		ki = len(keys) - 1 // Key index
+		k  = keys[ki]      // Key
+	)
+
+	fmt.Println("Getting!", keys)
+
+	// Now that our variable are allocated, let's lock!
 	rw.mux.RLock()
-	// If action exists for this key..
-	if ta, ok = rw.a[k]; ok {
-		// If action is PUT, set our target to the action body and goto copy
-		if ta.a == _put {
-			v = ta.v
+	// We are going to retreive the bucket with matching keys
+	// Note: We omit the last key, as this is for the value - rather than the buckets!
+	if bkt = rw.a.bucket(keys[:ki]); bkt == nil {
+		// No match, goto root
+		goto ROOT
+	}
+
+	// Try to get value at bucket matching our key
+	if v, ok = bkt.m[k]; ok {
+		// Attempt to assert type as action
+		if ta, ok = v.(action); !ok {
+			// This is a bucket, set v to nil and move along
+			v = nil
+			goto END
 		}
 
-		// Action was DELETE, set ok to false and goto end
-		ok = false
+		// Set the value to our transaction-level value
+		if ta.a == _put {
+			// Will set as newest value
+			v = ta.v
+		} else {
+			// Value was deleted during the transaction, v is nil
+			v = nil
+		}
+
+		// We found what we were looking for, goto the end
 		goto END
 	}
 
-	// Get a non-pointer reference to storage
-	if v, ok = rw.h.s[k]; !ok {
-		// Target does not exist, goto end
+ROOT:
+	// Set bkt to a bucket lookup from root
+	if bkt = rw.h.root.bucket(keys[:ki]); bkt == nil {
+		// Nothing was found, goto the end
 		goto END
+	}
+
+	if v, ok = bkt.m[k]; !ok {
+		// Value was not found for this key, set v to nil
+		v = nil
 	}
 
 END:
@@ -104,84 +164,142 @@ END:
 }
 
 // Put will put
-func (rw *ReadWriteTx) Put(k string, v interface{}) (err error) {
+func (rw *ReadWriteTx) put(keys []string, v interface{}) (err error) {
+	var (
+		bkt *Bucket
+
+		ki  = len(keys) - 1
+		k   = keys[ki]
+		act = action{a: _put, v: v} // Create action
+	)
+
 	if len(k) > MaxKeyLen {
-		return ErrInvalidKey
+		err = ErrInvalidKey
+		return
 	}
 
-	// Create action
-	act := action{a: _put, v: v}
+	fmt.Println("About to put", keys)
 	rw.mux.Lock()
-	/*
-		Maybe add a Copy func to make COW and COR avail
-		if !rw.h.opts.CopyOnWrite {
-			// Set action body to value and goto the end
-			act.b = v
-			goto END
-		}
+	if bkt, err = rw.a.createBucket(keys[:ki]); err != nil {
+		goto END
+	}
 
-		// Pre-allocate action body to be the length of value
-		act.b = make([]byte, len(v))
-		// Copy value to action body
-		copy(act.b, v)
-	*/
-	rw.a[k] = act
+	bkt.m[k] = act
+END:
 	rw.mux.Unlock()
 	return
 }
 
 // Del will delete
-func (rw *ReadWriteTx) Del(k string) {
-	rw.mux.Lock()
-	// Set a delete action
-	rw.a[k] = action{
-		a: _del,
+func (rw *ReadWriteTx) del(keys []string) {
+	var (
+		bkt *Bucket
+
+		ki  = len(keys) - 1
+		k   = keys[ki]
+		act = action{a: _del} // Create action
+	)
+
+	if len(k) > MaxKeyLen {
+		return
 	}
+
+	rw.mux.Lock()
+	if bkt = rw.a.bucket(keys[:ki]); bkt == nil {
+		goto END
+	}
+
+	bkt.m[k] = act
+
+END:
 	rw.mux.Unlock()
+	return
 }
 
 // Keys will list the keys for a DB
-func (rw *ReadWriteTx) Keys() (keys []string) {
-	// Pre-allocate keys to be the length of our internal storage
-	keys = make([]string, 0, len(rw.h.s))
-	// For each item in our internal storage, append key to keys
-	for k := range rw.h.s {
-		keys = append(keys, k)
+func (rw *ReadWriteTx) keys(keys []string) (out []string) {
+	var (
+		bkt *Bucket
+		a   action
+		ok  bool
+
+		om = make(map[string]struct{}) // Out map, used for tracking keys
+	)
+
+	rw.mux.RLock()
+	// Get bucket matching provided keys from root
+	if bkt = rw.h.root.bucket(keys); bkt == nil {
+		// No match exists, jump to the transaction lookup
+		goto TXN
+	}
+
+	// Iterate through bucket's map keys, set out map with each iteration
+	for k := range bkt.m {
+		om[k] = struct{}{}
+	}
+
+TXN:
+	// Get bucket matching provided keys from the transaction
+	if bkt = rw.a.bucket(keys); bkt != nil {
+		// No match exists, jump to the end
+		goto END
+	}
+
+	// Iterate through bucket's map keys, for each iteration:
+	// 	- Assert value as an action
+	// 		- If value is not an action, continue
+	// 	- If action is a put, set out map
+	// 	- If action is a del, remove key from out map
+	for k, v := range bkt.m {
+		if a, ok = v.(action); !ok {
+			continue
+		}
+
+		switch a.a {
+		case _put:
+			om[k] = struct{}{}
+
+		case _del:
+			delete(om, k)
+		}
+	}
+
+END:
+	rw.mux.RUnlock()
+	// Make our outbound slice with a capacity as the length of our out map
+	out = make([]string, 0, len(om))
+
+	for k := range om {
+		out = append(out, k)
 	}
 
 	return
 }
 
-// WriteTx is a write-only transaction
+// CreateBucket will create a bucket
+func (rw *ReadWriteTx) CreateBucket(key string, mfn MarshalFn, ufn UnmarshalFn) (err error) {
+	fmt.Println("Creating bucket", key)
+	return rw.a.CreateBucket(key, mfn, ufn)
+}
+
+// Bucket will retrieve a bucket
+func (rw *ReadWriteTx) Bucket(keys ...string) (bkt *Bucket) {
+	if bkt = rw.a.bucket(keys); bkt != nil {
+		return
+	}
+
+	if bkt = rw.h.root.bucket(keys); bkt != nil {
+		bkt, _ = rw.a.createBucket(keys)
+		bkt.txn = rw
+	}
+
+	return
+}
+
+// WriteTx is a read/write transaction
 type WriteTx struct {
-	mux sync.Mutex
+	mux sync.RWMutex
 
-	// Actions map
-	a map[string]action
-}
-
-// Put will put
-func (w *WriteTx) Put(k string, v interface{}) (err error) {
-	if len(k) > MaxKeyLen {
-		return ErrInvalidKey
-	}
-
-	w.mux.Lock()
-	// Set a put action with the body
-	w.a[k] = action{
-		a: _put,
-		v: v,
-	}
-	w.mux.Unlock()
-	return
-}
-
-// Del will delete
-func (w *WriteTx) Del(k string) {
-	w.mux.Lock()
-	// Set a delete action
-	w.a[k] = action{
-		a: _del,
-	}
-	w.mux.Unlock()
+	// Actions
+	a *Bucket
 }
