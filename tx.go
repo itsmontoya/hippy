@@ -1,27 +1,11 @@
 package hippy
 
 import "sync"
-import "fmt"
 
-// RTx is a read transaction interface
-type RTx interface {
-	Get(k string) (v interface{}, ok bool)
-	Keys() (ks []string)
-}
-
-// WTx is a write transaction interface
-type WTx interface {
-	Put(k string, v interface{}) (err error)
-	Del(k string)
-	Keys() (ks []string)
-}
-
-// RWTx is a read-write transaction interface
-type RWTx interface {
-	Get(k string) (v interface{}, ok bool)
-	Put(k string, v interface{}) (err error)
-	Del(k string)
-	Keys() (ks []string)
+// Tx is a transaction interface
+type Tx interface {
+	Bucket(...string) *Bucket
+	Buckets() []string
 }
 
 // ReadTx is a read-only transaction
@@ -90,6 +74,11 @@ func (r *ReadTx) Bucket(keys ...string) (bkt *Bucket) {
 	return r.h.root.bucket(keys)
 }
 
+// Buckets will retrieve a list of buckets
+func (r *ReadTx) Buckets() (bs []string) {
+	return r.h.root.Buckets()
+}
+
 // ReadWriteTx is a read/write transaction
 type ReadWriteTx struct {
 	mux sync.RWMutex
@@ -111,8 +100,6 @@ func (rw *ReadWriteTx) get(keys []string) (v interface{}) {
 		ki = len(keys) - 1 // Key index
 		k  = keys[ki]      // Key
 	)
-
-	fmt.Println("Getting!", keys)
 
 	// Now that our variable are allocated, let's lock!
 	rw.mux.RLock()
@@ -178,7 +165,6 @@ func (rw *ReadWriteTx) put(keys []string, v interface{}) (err error) {
 		return
 	}
 
-	fmt.Println("About to put", keys)
 	rw.mux.Lock()
 	if bkt, err = rw.a.createBucket(keys[:ki]); err != nil {
 		goto END
@@ -206,7 +192,9 @@ func (rw *ReadWriteTx) del(keys []string) {
 
 	rw.mux.Lock()
 	if bkt = rw.a.bucket(keys[:ki]); bkt == nil {
-		goto END
+		if bkt = rw.h.root.bucket(keys[:ki]); bkt == nil {
+			goto END
+		}
 	}
 
 	bkt.m[k] = act
@@ -277,9 +265,13 @@ END:
 }
 
 // CreateBucket will create a bucket
-func (rw *ReadWriteTx) CreateBucket(key string, mfn MarshalFn, ufn UnmarshalFn) (err error) {
-	fmt.Println("Creating bucket", key)
+func (rw *ReadWriteTx) CreateBucket(key string, mfn MarshalFn, ufn UnmarshalFn) (*Bucket, error) {
 	return rw.a.CreateBucket(key, mfn, ufn)
+}
+
+// DeleteBucket will delete a bucket
+func (rw *ReadWriteTx) DeleteBucket(key string) error {
+	return rw.a.DeleteBucket(key)
 }
 
 // Bucket will retrieve a bucket
@@ -291,6 +283,27 @@ func (rw *ReadWriteTx) Bucket(keys ...string) (bkt *Bucket) {
 	if bkt = rw.h.root.bucket(keys); bkt != nil {
 		bkt, _ = rw.a.createBucket(keys)
 		bkt.txn = rw
+	}
+
+	return
+}
+
+// Buckets will retrieve a list of buckets
+func (rw *ReadWriteTx) Buckets() (bs []string) {
+	bm := make(map[string]struct{})
+	bs = rw.h.root.Buckets()
+
+	for _, k := range bs {
+		bm[k] = struct{}{}
+	}
+
+	var ok bool
+	for _, k := range rw.a.Buckets() {
+		if _, ok = bm[k]; ok {
+			continue
+		}
+
+		bs = append(bs, k)
 	}
 
 	return

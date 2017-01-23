@@ -33,9 +33,6 @@ func NewDefaultOpts(path, name string) (o Opts) {
 	o = defaultOptions
 	o.Path = path
 	o.Name = name
-
-	o.ArchiveOnClose = false
-	o.CompactOnClose = false
 	return
 }
 

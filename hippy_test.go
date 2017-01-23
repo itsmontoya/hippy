@@ -2,11 +2,11 @@ package hippy
 
 import (
 	//	"encoding/json"
-	//"errors"
+	"errors"
 	"fmt"
 	//"io/ioutil"
-	//"os"
-	//"path/filepath"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	//"time"
@@ -26,7 +26,7 @@ var (
 	testKeysB = getKeysB(testKeys)
 	testVal   = []byte("Hello! This is my long-ish string. It has some cool information in it. Check it out man!")
 
-	tmpPath string
+	tmpPath = "./testing/"
 
 	opts Opts
 
@@ -34,17 +34,18 @@ var (
 	cryptyIV  = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 
 	mfn = func(v interface{}) (b []byte, err error) {
-		if str, ok := v.(string); ok {
-			b = []byte(str)
-		}
-
+		b, _ = v.([]byte)
 		return
 	}
 
 	ufn = func(b []byte) (v interface{}, err error) {
-		v = string(b)
+		v = b
 		return
 	}
+
+	outB []byte
+
+	ErrInvalidValueType = errors.New("invalid value type")
 )
 
 type ShitYa struct {
@@ -107,16 +108,17 @@ func TestBasic(t *testing.T) {
 		err error
 	)
 
-	tmpPath = "./testing/"
-
-	if db, err = New(NewDefaultOpts(tmpPath, "basic_test"), mfn, ufn); err != nil {
+	if db, err = New(NewDefaultOpts(tmpPath, "basic_test")); err != nil {
 		fmt.Println("Error opening:", err)
 		return
 	}
 
-	fmt.Println("txn", db.ReadWrite(func(tx *ReadWriteTx) (err error) {
-		tx.CreateBucket("main", mfn, ufn)
-		bkt := tx.Bucket("main")
+	db.ReadWrite(func(tx *ReadWriteTx) (err error) {
+		var bkt *Bucket
+		if bkt, err = tx.CreateBucket("main", mfn, ufn); err != nil {
+			return
+		}
+
 		bkt.Put("greeting", "hai")
 
 		if str, ok := bkt.Get("greeting").(string); ok {
@@ -124,13 +126,31 @@ func TestBasic(t *testing.T) {
 		} else {
 			fmt.Println("Get error", bkt.Get("greeting"))
 		}
-		return
-	}))
-	/*
-		fmt.Println("\n\n ")
 
+		return
+	})
+
+	db.ReadWrite(func(tx *ReadWriteTx) (err error) {
+		var bkt *Bucket
+		tx.DeleteBucket("main")
+
+		if bkt, err = tx.CreateBucket("main", mfn, ufn); err != nil {
+			return
+		}
+
+		if str, ok := bkt.Get("greeting").(string); !ok {
+			fmt.Println("Value does not exist as intended :)")
+		} else {
+			fmt.Println("Value exists when it should not", str)
+		}
+
+		return
+	})
+
+	/*
 		db.ReadWrite(func(tx *ReadWriteTx) (err error) {
 			bkt := tx.Bucket("main")
+			fmt.Println("Bucket?", bkt)
 			if str, ok := bkt.Get("greeting").(string); ok {
 				fmt.Println("GET", str)
 			} else {
@@ -138,31 +158,14 @@ func TestBasic(t *testing.T) {
 			}
 			return
 		})
-
-		db.Close()
-		fmt.Println("\n\n ")
-
-		if db, err = New(NewDefaultOpts(tmpPath, "basic_test"), mfn, ufn); err != nil {
-			fmt.Println("Error opening:", err)
-			return
-		}
-
-		fmt.Println("txn", db.ReadWrite(func(tx *ReadWriteTx) (err error) {
-			tx.CreateBucket("main", mfn, ufn)
-			bkt := tx.Bucket("main")
-
-			if str, ok := bkt.Get("greeting").(string); ok {
-				fmt.Println("GET", str)
-			} else {
-				fmt.Println("Get error", bkt.Get("greeting"))
-			}
-			return
-		}))
 	*/
-
-	//	hippyRW(db, 1)
 	db.Close()
-	//	os.Remove(filepath.Join(tmpPath, "basic_test.hdb"))
+	removeFile("basic_test.hdb")
+	removeFile("basic_test.archive.hdb")
+}
+
+func removeFile(name string) error {
+	return os.Remove(filepath.Join(tmpPath, name))
 }
 
 /*
@@ -176,18 +179,75 @@ func BenchmarkShortHippy(b *testing.B) {
 
 	b.ReportAllocs()
 }
+*/
 
 func BenchmarkBasicHippy(b *testing.B) {
+	var (
+		db  *Hippy
+		err error
+	)
+
+	b.StopTimer()
+	if db, err = New(NewDefaultOpts(tmpPath, "basic_test")); err != nil {
+		b.Error("Error opening:" + err.Error())
+		return
+	}
+
+	if err = db.ReadWrite(func(tx *ReadWriteTx) (err error) {
+		tx.CreateBucket("main", mfn, ufn)
+		return
+	}); err != nil {
+		b.Error("Error setting bucket:" + err.Error())
+		return
+	}
+
+	b.StartTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			hippyRW(db, 100)
-
+			var err error
+			if _, err = hippyRW(db, 100); err != nil {
+				b.Error(err)
+			}
 		}
 	})
 
 	b.ReportAllocs()
+	b.StopTimer()
+	db.Close()
 }
 
+func BenchmarkBasicBolt(b *testing.B) {
+	var (
+		db  *bolt.DB
+		err error
+	)
+
+	b.StopTimer()
+	if db, err = bolt.Open(filepath.Join(tmpPath, "test.bdb"), 0644, nil); err != nil {
+		fmt.Println("Error opening:", err)
+	}
+
+	db.Update(func(tx *bolt.Tx) error {
+		tx.CreateBucket([]byte("main"))
+		return nil
+	})
+
+	b.StartTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		var err error
+		for pb.Next() {
+			if _, err = boltRW(db, 100); err != nil {
+				b.Error(err)
+			}
+		}
+	})
+
+	b.ReportAllocs()
+	b.StopTimer()
+	db.Close()
+}
+
+/*
 func BenchmarkGzipHippy(b *testing.B) {
 	b.StopTimer()
 	var (
@@ -292,14 +352,6 @@ func BenchmarkShortBolt(b *testing.B) {
 	b.ReportAllocs()
 }
 
-func BenchmarkBasicBolt(b *testing.B) {
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			boltRW(bdb, 100)
-		}
-	})
-	b.ReportAllocs()
-}
 
 func BenchmarkAllGetBolt(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
@@ -358,20 +410,6 @@ func mapR(db *LMap, iter int) (err error) {
 	return
 }
 
-func boltRW(bdb *bolt.DB, iter int) (err error) {
-	var bb []byte
-	return bdb.Update(func(tx *bolt.Tx) (err error) {
-		bkt := tx.Bucket(boltBktKey)
-		for i := 0; i < iter; i++ {
-			for _, k := range testKeysB {
-				bkt.Put(k, testVal)
-				bb = bkt.Get(k)
-			}
-		}
-		return
-	})
-}
-
 func boltR(bdb *bolt.DB, iter int) (err error) {
 	var bb []byte
 	return bdb.View(func(tx *bolt.Tx) (err error) {
@@ -387,28 +425,40 @@ func boltR(bdb *bolt.DB, iter int) (err error) {
 
 */
 
-func hippyRW(db *Hippy, iter int) (err error) {
-	var (
-		v interface{}
-	)
+func hippyRW(db *Hippy, iter int) (b []byte, err error) {
+	var ok bool
+	err = db.ReadWrite(func(txn *ReadWriteTx) (err error) {
+		bkt := txn.Bucket("main")
 
-	sa := ShitYa{
-		Name: "Tali",
-		DOB:  "03-16-89",
-	}
-
-	return db.ReadWrite(func(txn *ReadWriteTx) (err error) {
 		for i := 0; i < iter; i++ {
 			for _, k := range testKeys {
-				bkt := txn.Bucket("main")
-				bkt.Put(k, sa)
-				v = bkt.Get(k)
+				bkt.Put(k, testVal)
+				if b, ok = bkt.Get(k).([]byte); !ok {
+					err = ErrInvalidValueType
+					return
+				}
+			}
+		}
 
-				fmt.Println(v)
+		return
+	})
+
+	return
+}
+
+func boltRW(bdb *bolt.DB, iter int) (bb []byte, err error) {
+	err = bdb.Update(func(tx *bolt.Tx) (err error) {
+		bkt := tx.Bucket([]byte("main"))
+		for i := 0; i < iter; i++ {
+			for _, k := range testKeysB {
+				bkt.Put(k, testVal)
+				bb = bkt.Get(k)
 			}
 		}
 		return
 	})
+
+	return
 }
 
 type LMap struct {

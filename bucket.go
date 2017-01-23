@@ -1,9 +1,45 @@
 package hippy
 
-import "fmt"
+import "sync"
 
 // RawValue value type
 type RawValue []byte
+
+var bktP = bucketPool{
+	p: sync.Pool{
+		New: func() interface{} {
+			return newBucket()
+		},
+	},
+}
+
+type bucketPool struct {
+	p sync.Pool
+}
+
+func (b *bucketPool) Get() (bkt *Bucket) {
+	bkt, _ = b.p.Get().(*Bucket)
+	return
+}
+
+func (b *bucketPool) Put(bkt *Bucket) {
+	bkt.keys = bkt.keys[:]
+	bkt.mfn = nil
+	bkt.ufn = nil
+	bkt.txn = nil
+
+	for k := range bkt.m {
+		delete(bkt.m, k)
+	}
+
+	b.p.Put(bkt)
+}
+
+func newBucket() *Bucket {
+	return &Bucket{
+		m: make(map[string]interface{}),
+	}
+}
 
 // Bucket manages buckets of data
 type Bucket struct {
@@ -26,6 +62,7 @@ func (b *Bucket) bucket(keys []string) (bkt *Bucket) {
 
 	for _, k := range keys {
 		if v, ok = bkt.m[k]; !ok {
+			bkt = nil
 			return
 		}
 
@@ -66,11 +103,9 @@ func (b *Bucket) createBucket(keys []string) (bkt *Bucket, err error) {
 			continue
 		}
 
-		nb := &Bucket{
-			keys: keys[:i+1],
-			m:    make(map[string]interface{}),
-			txn:  b.txn,
-		}
+		nb := bktP.Get()
+		nb.keys = keys[:i+1]
+		nb.txn = b.txn
 
 		bkt.m[k] = nb
 		bkt = nb
@@ -79,13 +114,33 @@ func (b *Bucket) createBucket(keys []string) (bkt *Bucket, err error) {
 	return
 }
 
-// CreateBucket will create a bucket
-func (b *Bucket) CreateBucket(key string, mfn MarshalFn, ufn UnmarshalFn) (err error) {
+func (b *Bucket) parseRaw() (err error) {
+	if b.ufn == nil {
+		return
+	}
+
 	var (
-		bkt *Bucket
-		ok  bool
+		rv RawValue
+		ok bool
 	)
 
+	for k, v := range b.m {
+		if rv, ok = v.(RawValue); !ok {
+			continue
+		}
+
+		if v, err = b.ufn(rv[:]); err != nil {
+			continue
+		}
+
+		b.m[k] = v
+	}
+
+	return
+}
+
+// CreateBucket will create a bucket
+func (b *Bucket) CreateBucket(key string, mfn MarshalFn, ufn UnmarshalFn) (bkt *Bucket, err error) {
 	if bkt, err = b.createBucket([]string{key}); err != nil {
 		return
 	}
@@ -97,18 +152,63 @@ func (b *Bucket) CreateBucket(key string, mfn MarshalFn, ufn UnmarshalFn) (err e
 	bkt.mfn = mfn
 	bkt.ufn = ufn
 	bkt.txn = b.txn
+	return
+}
 
-	var rv RawValue
-	for k, v := range bkt.m {
-		if rv, ok = v.(RawValue); !ok {
-			continue
+// DeleteBucket will delete a bucket
+func (b *Bucket) DeleteBucket(key string) (err error) {
+	var (
+		rw  *ReadWriteTx
+		bkt *Bucket
+		bk  []string
+
+		delKeys = make(map[string]struct{})
+		delBkts = make(map[string]struct{})
+	)
+
+	switch txn := b.txn.(type) {
+	case *ReadWriteTx:
+		rw = txn
+
+	default:
+		err = ErrInvalidTxnType
+		return
+	}
+
+	bk = append(bk, b.keys...)
+	bk = append(bk, key)
+
+	if bkt = rw.h.root.bucket(bk); bkt != nil {
+		for _, k := range bkt.Buckets() {
+			delBkts[k] = struct{}{}
 		}
 
-		if v, err = ufn(rv[:]); err != nil {
-			continue
+		for _, k := range bkt.Keys() {
+			delKeys[k] = struct{}{}
+		}
+	}
+
+	if bkt = b.bucket([]string{key}); bkt != nil {
+		for _, k := range bkt.Buckets() {
+			delBkts[k] = struct{}{}
 		}
 
-		bkt.m[k] = v
+		for _, k := range bkt.Keys() {
+			delKeys[k] = struct{}{}
+		}
+	}
+
+	for k := range delBkts {
+		b.DeleteBucket(k)
+	}
+
+	kend := len(bk)
+	keys := make([]string, kend+1)
+	copy(keys, bk)
+
+	for k := range delKeys {
+		keys[kend] = k
+		rw.del(keys)
 	}
 
 	return
@@ -116,12 +216,12 @@ func (b *Bucket) CreateBucket(key string, mfn MarshalFn, ufn UnmarshalFn) (err e
 
 // Get will return an interface matching a provided key
 func (b *Bucket) Get(k string) (v interface{}) {
-	fmt.Println("Getting", k)
 	switch txn := b.txn.(type) {
-	case *ReadTx:
-		v = txn.get(append(b.keys, k))
 	case *ReadWriteTx:
 		v = txn.get(append(b.keys, k))
+
+	case *ReadTx, nil:
+		v = b.m[k]
 	}
 
 	return
@@ -129,15 +229,14 @@ func (b *Bucket) Get(k string) (v interface{}) {
 
 // Has will return a boolean representing if there is a match for a provided key
 func (b *Bucket) Has(k string) (ok bool) {
+	_, ok = b.m[k]
 	return
 }
 
 // Put will put an interface for a provided key
 func (b *Bucket) Put(k string, v interface{}) (err error) {
-	fmt.Println("Bucket put", b.keys, k, v)
 	switch txn := b.txn.(type) {
 	case *ReadWriteTx:
-		fmt.Println("Txn put")
 		err = txn.put(append(b.keys, k), v)
 
 	default:
@@ -159,21 +258,83 @@ func (b *Bucket) Del(k string) {
 	return
 }
 
+// ForEach will iterate through each item within a bucket
+func (b *Bucket) ForEach(fn func(k string, v interface{}) error) (err error) {
+	for k, v := range b.m {
+		if _, ok := v.(*Bucket); ok {
+			continue
+		}
+
+		if err = fn(k, v); err != nil {
+			break
+		}
+	}
+
+	return
+
+}
+
 // Keys will list all the keys for a particular bucket
 func (b *Bucket) Keys() (ks []string) {
 	switch txn := b.txn.(type) {
-	case ReadTx:
-		ks = txn.keys(b.keys)
-	case ReadWriteTx:
-		ks = txn.keys(b.keys)
+	case *ReadTx, nil:
+		for k := range b.m {
+			ks = append(ks, k)
+		}
+
+	case *ReadWriteTx:
+		for k, v := range b.m {
+			if _, ok := v.(*Bucket); ok {
+				continue
+			}
+
+			ks = append(ks, k)
+
+		}
+
+		if bkt := txn.h.root.bucket(b.keys); bkt != nil {
+			for k, v := range bkt.m {
+				if _, ok := v.(*Bucket); !ok {
+					continue
+				}
+
+				ks = append(ks, k)
+			}
+		}
 	}
 
 	return
 }
 
-/*
-	Get(k string) (v interface{}, ok bool)
-	Put(k string, v interface{}) (err error)
-	Del(k string)
-	Keys() (ks []string)
-*/
+// Buckets will return a list of buckets contained directly within this bucket
+// Note: Children of child buckets are not included in this list
+func (b *Bucket) Buckets() (bs []string) {
+	for k, v := range b.m {
+		switch v.(type) {
+		case *Bucket:
+			bs = append(bs, k)
+		}
+	}
+
+	if rw, ok := b.txn.(*ReadWriteTx); ok {
+		var bkt *Bucket
+		if bkt = rw.h.root.bucket(b.keys); bkt == nil {
+			return
+		}
+
+		bm := make(map[string]struct{}, len(bs))
+		for _, k := range bs {
+			bm[k] = struct{}{}
+		}
+
+		for _, k := range bkt.Buckets() {
+			if _, ok := bm[k]; ok {
+				continue
+			}
+
+			bs = append(bs, k)
+		}
+	}
+
+	return
+}
