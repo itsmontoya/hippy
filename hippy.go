@@ -84,6 +84,10 @@ func New(path, name string, opts Opts, mws ...middleware.Middleware) (h *Hippy, 
 		Ext:  "hdb",
 	}
 
+	if opts.AsyncBackend {
+		lfopts.Backend = lineFile.AsyncBackend
+	}
+
 	if hip.f, err = lineFile.New(lfopts); err != nil {
 		return
 	}

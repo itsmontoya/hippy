@@ -12,6 +12,8 @@ var defaultOptions = Opts{
 
 	ArchiveOnClose: true,
 	CompactOnClose: true,
+
+	AsyncBackend: false,
 }
 
 // NewOpts returns new options for Hippy
