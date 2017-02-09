@@ -37,4 +37,6 @@ type Opts struct {
 
 	ArchiveOnClose bool `ini:"archiveOnClose"`
 	CompactOnClose bool `ini:"compactOnClose"`
+
+	AsyncBackend bool `ini:"asyncBackend"`
 }
