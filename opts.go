@@ -12,6 +12,8 @@ var defaultOptions = Opts{
 
 	ArchiveOnClose: true,
 	CompactOnClose: true,
+
+	AsyncBackend: false,
 }
 
 // NewOpts returns new options for Hippy
@@ -46,4 +48,6 @@ type Opts struct {
 
 	ArchiveOnClose bool `ini:"archiveOnClose"`
 	CompactOnClose bool `ini:"compactOnClose"`
+
+	AsyncBackend bool `ini:"asyncBackend"`
 }
