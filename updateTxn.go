@@ -1,7 +1,6 @@
 package hippy
 
 import "sync"
-import "fmt"
 
 // updateTxn is a read/write transaction
 type updateTxn struct {
@@ -64,7 +63,7 @@ func (txn *updateTxn) createBucket(keys []string, mfn MarshalFn, ufn UnmarshalFn
 }
 
 func (txn *updateTxn) deleteBucket(keys []string) (err error) {
-	var bkt *Bucket
+	var bkt, pbkt *Bucket
 	// Last key index
 	lki := len(keys) - 1
 	key := keys[lki]
@@ -76,13 +75,22 @@ func (txn *updateTxn) deleteBucket(keys []string) (err error) {
 	}
 
 	// Get the parent bucket
-	if bkt = txn.bucket(keys[:lki]); bkt == nil {
+	if pbkt = txn.bucket(keys[:lki]); pbkt == nil {
 		// Parent bucket doesn't exist, no use in deleting it's children
 		return
 	}
 
-	// Set delete action
-	bkt.m[key] = action{a: _del}
+	txn.forEach(keys, func(k string, v interface{}) (err error) {
+		switch val := v.(type) {
+		case *Bucket:
+			err = txn.deleteBucket(val.keys)
+		case Duper, action:
+			pbkt.m[key] = action{a: _del}
+		}
+
+		return
+	})
+
 	return
 }
 
@@ -223,7 +231,6 @@ func (txn *updateTxn) put(keys []string, k string, v Duper) (err error) {
 	}
 
 	txn.mux.Lock()
-	fmt.Println("About to put", txn.a, keys)
 	if bkt, err = createBucket(txn.a, keys, nil, nil); err == nil {
 		if txn.h.opts.CopyOnWrite {
 			// Create copy before inserting
@@ -265,10 +272,8 @@ END:
 // forEach will iterate through each item
 func (txn *updateTxn) forEach(keys []string, fn ForEachFn) (err error) {
 	var (
-		bkt  *Bucket
-		abkt *Bucket
-		ok   bool
-
+		bkt    *Bucket
+		abkt   *Bucket
 		ignore = make(map[string]struct{})
 	)
 
@@ -282,11 +287,15 @@ func (txn *updateTxn) forEach(keys []string, fn ForEachFn) (err error) {
 		return bkt.forEach(fn)
 	}
 
-	if err = bkt.forEach(func(k string, v interface{}) (err error) {
-		var a action
-		if a, ok = abkt.m[k].(action); ok {
-			ignore[k] = struct{}{}
-			v = a.v
+	for k, v := range abkt.m {
+		a, ok := v.(action)
+		if !ok {
+			continue
+		}
+
+		ignore[k] = struct{}{}
+		if a.a == _del {
+			continue
 		}
 
 		if txn.h.opts.CopyOnRead {
@@ -294,11 +303,7 @@ func (txn *updateTxn) forEach(keys []string, fn ForEachFn) (err error) {
 		} else {
 			fn(k, a.v)
 		}
-
-		return
-	}); err != nil {
-		return
 	}
 
-	return abkt.forEachExcept(ignore, fn)
+	return bkt.forEachExcept(ignore, fn)
 }

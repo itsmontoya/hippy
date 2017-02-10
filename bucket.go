@@ -137,6 +137,11 @@ func (b *Bucket) DeleteBucket(key string) (err error) {
 	return b.txn.deleteBucket(ks)
 }
 
+// Buckets will return the child buckets
+func (b *Bucket) Buckets() (bs []string) {
+	return b.txn.buckets(b.keys)
+}
+
 // Get will return an interface matching a provided key
 func (b *Bucket) Get(k string) (v interface{}) {
 	return b.txn.get(b.keys, k)

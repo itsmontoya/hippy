@@ -363,7 +363,6 @@ func getActions(b *Bucket) (acts map[string]action) {
 // Note: This is not thread safe. It is expected that the calling function is managing locks
 func (h *Hippy) write(actions *Bucket) (err error) {
 	var (
-		ll   *bytes.Buffer
 		rbkt *Bucket
 		body []byte
 	)
@@ -382,17 +381,9 @@ func (h *Hippy) write(actions *Bucket) (err error) {
 				return
 			}
 
-			if ll, err = h.newLogLine(a.a, append(bkt.keys, k), body); err != nil {
+			if err = h.writeLogLine(a.a, append(bkt.keys, k), body); err != nil {
 				return
 			}
-
-			// We are going to write before modifying memory
-			if err = h.f.WriteLine(ll.Bytes()); err != nil {
-				return
-			}
-
-			bp.Put(ll)
-			ll = nil
 
 			// Fulfill action
 			switch a.a {
@@ -402,6 +393,11 @@ func (h *Hippy) write(actions *Bucket) (err error) {
 			case _del:
 				// Delete by key
 				delete(rbkt.m, k)
+				if len(rbkt.m) == 0 {
+					if err = h.writeLogLine(_del, bkt.keys, nil); err != nil {
+						return
+					}
+				}
 			}
 		}
 
@@ -409,6 +405,21 @@ func (h *Hippy) write(actions *Bucket) (err error) {
 	}
 
 	return h.f.Flush()
+}
+
+func (h *Hippy) writeLogLine(a byte, keys []string, body []byte) (err error) {
+	var ll *bytes.Buffer
+	if ll, err = h.newLogLine(a, keys, body); err != nil {
+		return
+	}
+
+	// We are going to write before modifying memory
+	if err = h.f.WriteLine(ll.Bytes()); err != nil {
+		return
+	}
+
+	bp.Put(ll)
+	return
 }
 
 func (h *Hippy) seekToLastHash(tgt *lineFile.File) (err error) {

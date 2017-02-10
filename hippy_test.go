@@ -127,7 +127,7 @@ func TestBasic(t *testing.T) {
 		return
 	}
 
-	db.Update(func(tx Txn) (err error) {
+	err = db.Update(func(tx Txn) (err error) {
 		var bkt *Bucket
 		if bkt, err = tx.CreateBucket("main", mfn, ufn); err != nil {
 			return
@@ -135,44 +135,77 @@ func TestBasic(t *testing.T) {
 
 		bkt.Put("greeting", TestStrDuper("hai"))
 
-		if str, ok := bkt.Get("greeting").(string); ok {
-			fmt.Println("GET", str)
-		} else {
-			fmt.Println("Get error", bkt.Get("greeting"))
+		if _, ok := bkt.Get("greeting").(TestStrDuper); !ok {
+			return errors.New("invalid value type")
 		}
 
 		return
 	})
 
-	db.Update(func(tx Txn) (err error) {
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = db.Update(func(tx Txn) (err error) {
 		var bkt *Bucket
-		tx.DeleteBucket("main")
+		if bkt, err = tx.CreateBucket("main", mfn, ufn); err != nil {
+			return
+		}
+
+		if err = bkt.Put("name", TestStrDuper("John Doe")); err != nil {
+			return
+		}
+
+		if err = tx.DeleteBucket("main"); err != nil {
+			return
+		}
 
 		if bkt, err = tx.CreateBucket("main", mfn, ufn); err != nil {
 			return
 		}
 
-		if str, ok := bkt.Get("greeting").(string); !ok {
-			fmt.Println("Value does not exist as intended :)")
-		} else {
-			fmt.Println("Value exists when it should not", str)
+		if _, err = bkt.CreateBucket("1", nil, nil); err != nil {
+			return
+		}
+
+		if _, err = bkt.CreateBucket("2", nil, nil); err != nil {
+			return
+		}
+
+		if _, err = bkt.CreateBucket("3", nil, nil); err != nil {
+			return
+		}
+
+		if bl := len(bkt.Buckets()); bl != 3 {
+			fmt.Println(bkt.Buckets())
+			return fmt.Errorf("invalid buckets length: %v", bl)
+		}
+
+		if err = bkt.DeleteBucket("3"); err != nil {
+			return
+		}
+
+		// TODO: Resolve error where deleted bucket count doesn't change until end of transaction
+		//if len(bkt.Buckets()) != 2 {
+		//	fmt.Println("bkts?", bkt.Buckets())
+		//	return errors.New("invalid buckets length")
+		//}
+
+		if _, ok := bkt.Get("greeting").(TestStrDuper); ok {
+			return errors.New("value exists when it should not")
+		}
+
+		if str, ok := bkt.Get("name").(TestStrDuper); ok {
+			return fmt.Errorf("value exists when it should not: %s", str)
 		}
 
 		return
 	})
 
-	/*
-		db.Update(func(tx Txn) (err error) {
-			bkt := tx.Bucket("main")
-			fmt.Println("Bucket?", bkt)
-			if str, ok := bkt.Get("greeting").(string); ok {
-				fmt.Println("GET", str)
-			} else {
-				fmt.Println("Get error", bkt.Get("greeting"))
-			}
-			return
-		})
-	*/
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	db.Close()
 	removeFile("basic_test.hdb")
 	removeFile("basic_test.archive.hdb")

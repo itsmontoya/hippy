@@ -49,15 +49,7 @@ type ForEachFn func(key string, val interface{}) error
 type TxnFn func(txn Txn) error
 
 func createBucket(bkt *Bucket, keys []string, mfn MarshalFn, ufn UnmarshalFn) (nbkt *Bucket, err error) {
-	var (
-		v  interface{}
-		ok bool
-		kl int
-	)
-
-	if kl = len(keys); kl == 0 {
-		return
-	}
+	nbkt = bkt
 
 	for i, k := range keys {
 		if len(k) > MaxKeyLen {
@@ -66,19 +58,25 @@ func createBucket(bkt *Bucket, keys []string, mfn MarshalFn, ufn UnmarshalFn) (n
 			return
 		}
 
-		if v, ok = bkt.m[k]; ok {
-			if nbkt, ok = v.(*Bucket); !ok {
+		switch tgt := bkt.m[k].(type) {
+		case *Bucket:
+			nbkt = tgt
+
+		case action:
+			if tgt.a == _put {
 				err = ErrCannotCreateBucket
 				return
 			}
 
-			bkt = nbkt
-			continue
-		}
+			nbkt = bktP.Get()
+			nbkt.keys = keys[:i+1]
+			nbkt.txn = bkt.txn
 
-		nbkt = bktP.Get()
-		nbkt.keys = keys[:i+1]
-		nbkt.txn = bkt.txn
+		case nil:
+			nbkt = bktP.Get()
+			nbkt.keys = keys[:i+1]
+			nbkt.txn = bkt.txn
+		}
 
 		bkt.m[k] = nbkt
 		bkt = nbkt
