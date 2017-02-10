@@ -8,6 +8,14 @@ const (
 	wTxn
 )
 
+// Duper returns a duplicate of itself
+type Duper interface {
+	Dup() Duper
+}
+
+// RawValue value type
+type RawValue []byte
+
 // MarshalFn is the marshaling func used by Value
 type MarshalFn func(interface{}) ([]byte, error)
 
@@ -17,71 +25,10 @@ type UnmarshalFn func([]byte) (interface{}, error)
 // action stores the action-type and body for a transaction item
 type action struct {
 	a byte
-	v interface{}
+	v Duper
 }
 
 type storage map[string]*Bucket
-
-// Error is a simple error type which is able to be stored as a const, rather than a global var
-type Error string
-
-// Error fulfills the interface requirements for an error
-func (e Error) Error() string {
-	return string(e)
-}
-
-// ErrorList is a list of errors
-type ErrorList []error
-
-// Error is the error interface implementation
-func (e ErrorList) Error() string {
-	if len(e) == 0 {
-		return ""
-	}
-
-	b := []byte("the following errors occured:\n")
-	for _, err := range e {
-		b = append(b, err.Error()...)
-		b = append(b, '\n')
-	}
-
-	return string(b)
-}
-
-// Append appends an error to the error list
-func (e ErrorList) Append(err error) ErrorList {
-	if err == nil {
-		return e
-	}
-
-	if oe, ok := err.(ErrorList); ok {
-		return append(e, oe...)
-	}
-	return append(e, err)
-}
-
-// Push adds the error to the list if it is not nil
-func (e *ErrorList) Push(err error) {
-	if e == nil || err == nil {
-		return
-	}
-	switch err := err.(type) {
-	case ErrorList:
-		*e = append(*e, err...)
-	case *ErrorList:
-		*e = append(*e, *err...)
-	default:
-		*e = append(*e, err)
-	}
-}
-
-// Err returns error value of ErrorList
-func (e ErrorList) Err() error {
-	if len(e) == 0 {
-		return nil
-	}
-	return e
-}
 
 func reverseByteSlice(bs []byte) {
 	var n int
@@ -93,4 +40,55 @@ func reverseByteSlice(bs []byte) {
 
 		bs[i], bs[n] = bs[n], bs[i]
 	}
+}
+
+// ForEachFn is used for ForEach requests
+type ForEachFn func(key string, val interface{}) error
+
+// TxnFn is used for transactions
+type TxnFn func(txn Txn) error
+
+func createBucket(bkt *Bucket, keys []string, mfn MarshalFn, ufn UnmarshalFn) (nbkt *Bucket, err error) {
+	var (
+		v  interface{}
+		ok bool
+		kl int
+	)
+
+	if kl = len(keys); kl == 0 {
+		return
+	}
+
+	for i, k := range keys {
+		if len(k) > MaxKeyLen {
+			nbkt = nil
+			err = ErrInvalidKey
+			return
+		}
+
+		if v, ok = bkt.m[k]; ok {
+			if nbkt, ok = v.(*Bucket); !ok {
+				err = ErrCannotCreateBucket
+				return
+			}
+
+			bkt = nbkt
+			continue
+		}
+
+		nbkt = bktP.Get()
+		nbkt.keys = keys[:i+1]
+		nbkt.txn = bkt.txn
+
+		bkt.m[k] = nbkt
+		bkt = nbkt
+	}
+
+	if nbkt.mfn == nil {
+		nbkt.mfn = mfn
+		nbkt.ufn = ufn
+		nbkt.parseRaw()
+	}
+
+	return
 }

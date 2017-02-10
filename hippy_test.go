@@ -25,8 +25,8 @@ var (
 	testKeys  = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	testKeysB = getKeysB(testKeys)
 	testVal   = []byte("Hello! This is my long-ish string. It has some cool information in it. Check it out man!")
-
-	tmpPath = "./testing/"
+	testValD  = TestSliceDuper(testVal)
+	tmpPath   = "./testing/"
 
 	opts Opts
 
@@ -48,9 +48,23 @@ var (
 	ErrInvalidValueType = errors.New("invalid value type")
 )
 
-type ShitYa struct {
+type TestEntry struct {
 	Name string
 	DOB  string
+}
+
+type TestStrDuper string
+
+func (t TestStrDuper) Dup() Duper {
+	return t
+}
+
+type TestSliceDuper []byte
+
+func (t TestSliceDuper) Dup() Duper {
+	dt := make(TestSliceDuper, len(t))
+	copy(dt, t)
+	return dt
 }
 
 func getKeysB(keys []string) (out [][]byte) {
@@ -113,13 +127,13 @@ func TestBasic(t *testing.T) {
 		return
 	}
 
-	db.ReadWrite(func(tx *ReadWriteTx) (err error) {
+	db.Update(func(tx Txn) (err error) {
 		var bkt *Bucket
 		if bkt, err = tx.CreateBucket("main", mfn, ufn); err != nil {
 			return
 		}
 
-		bkt.Put("greeting", "hai")
+		bkt.Put("greeting", TestStrDuper("hai"))
 
 		if str, ok := bkt.Get("greeting").(string); ok {
 			fmt.Println("GET", str)
@@ -130,7 +144,7 @@ func TestBasic(t *testing.T) {
 		return
 	})
 
-	db.ReadWrite(func(tx *ReadWriteTx) (err error) {
+	db.Update(func(tx Txn) (err error) {
 		var bkt *Bucket
 		tx.DeleteBucket("main")
 
@@ -148,7 +162,7 @@ func TestBasic(t *testing.T) {
 	})
 
 	/*
-		db.ReadWrite(func(tx *ReadWriteTx) (err error) {
+		db.Update(func(tx Txn) (err error) {
 			bkt := tx.Bucket("main")
 			fmt.Println("Bucket?", bkt)
 			if str, ok := bkt.Get("greeting").(string); ok {
@@ -193,7 +207,7 @@ func BenchmarkBasicHippy(b *testing.B) {
 		return
 	}
 
-	if err = db.ReadWrite(func(tx *ReadWriteTx) (err error) {
+	if err = db.Update(func(tx Txn) (err error) {
 		tx.CreateBucket("main", mfn, ufn)
 		return
 	}); err != nil {
@@ -427,13 +441,13 @@ func boltR(bdb *bolt.DB, iter int) (err error) {
 
 func hippyRW(db *Hippy, iter int) (b []byte, err error) {
 	var ok bool
-	err = db.ReadWrite(func(txn *ReadWriteTx) (err error) {
+	err = db.Update(func(txn Txn) (err error) {
 		bkt := txn.Bucket("main")
 
 		for i := 0; i < iter; i++ {
 			for _, k := range testKeys {
-				bkt.Put(k, testVal)
-				if b, ok = bkt.Get(k).([]byte); !ok {
+				bkt.Put(k, testValD)
+				if b, ok = bkt.Get(k).(TestSliceDuper); !ok {
 					err = ErrInvalidValueType
 					return
 				}

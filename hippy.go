@@ -56,7 +56,7 @@ const (
 	ErrNoChanges = errors.Error("no changes occured, archive not necessary")
 
 	// ErrInvalidTxnType is returned when an invalid transaction type is used
-	ErrInvalidTxnType = errors.Error("cannot perform marshalDomain, unmarshalDomainrequested action using this transaction type")
+	ErrInvalidTxnType = errors.Error("cannot action using this transaction type")
 
 	// ErrCannotCreateBucket is returned when a bucket cannot be created
 	ErrCannotCreateBucket = errors.Error("cannot create bucket")
@@ -109,9 +109,8 @@ func New(opts Opts, mws ...middleware.Middleware) (h *Hippy, err error) {
 
 	h = &hip
 	// Initialize transaction pools
-	h.rtxp = sync.Pool{New: func() interface{} { return h.newReadTx() }}
-	h.wtxp = sync.Pool{New: func() interface{} { return h.newWriteTx() }}
-	h.rwtxp = sync.Pool{New: func() interface{} { return h.newReadWriteTx() }}
+	h.rtxp = sync.Pool{New: func() interface{} { return h.newreadTxn() }}
+	h.utxp = sync.Pool{New: func() interface{} { return h.newupdateTxn() }}
 
 	// Replay file data to populate the database
 	err = h.replay()
@@ -131,9 +130,8 @@ type Hippy struct {
 	af *lineFile.File // Archive file
 	tf *lineFile.File // Temporary file
 
-	rtxp  sync.Pool // Read transaction pool
-	wtxp  sync.Pool // Write transaction pool
-	rwtxp sync.Pool // Read/Write transaction pool
+	rtxp sync.Pool // Read transaction pool
+	utxp sync.Pool // Update transaction pool
 
 	closed bool // Closed state
 }
@@ -273,9 +271,8 @@ func (h *Hippy) replay() (err error) {
 		}
 
 		ki := len(keys) - 1
-		if bkt, err = h.root.createBucket(keys[:ki]); err != nil {
-			return
-		}
+		bkt = bktP.Get()
+		bkt.keys = keys[:ki]
 
 		// Fulfill action
 		switch a {
@@ -376,14 +373,8 @@ func (h *Hippy) write(actions *Bucket) (err error) {
 			continue
 		}
 
-		if rbkt, err = h.root.createBucket(bkt.keys); err != nil {
+		if rbkt, err = createBucket(h.root, bkt.keys, bkt.mfn, bkt.ufn); err != nil {
 			return
-		}
-
-		if rbkt.mfn == nil {
-			rbkt.mfn = bkt.mfn
-			rbkt.ufn = bkt.ufn
-			rbkt.parseRaw()
 		}
 
 		for k, a := range getActions(bkt) {
@@ -632,96 +623,72 @@ func (h *Hippy) compact() (err error) {
 	return
 }
 
-// newReadTx returns a new read transaction, used by read transaction pool
-func (h *Hippy) newReadTx() *ReadTx {
-	return &ReadTx{h}
+// newreadTxn returns a new read transaction, used by read transaction pool
+func (h *Hippy) newreadTxn() *readTxn {
+	return &readTxn{h}
 }
 
-// newWriteTx returns a new write transaction, used by write transaction pool
-func (h *Hippy) newWriteTx() *WriteTx {
-	return &WriteTx{
-		a: &Bucket{
-			m: make(map[string]interface{}),
-		},
-	}
-}
-
-// newReadWriteTx returns a new read/write transaction, used by read/write transaction pool
-func (h *Hippy) newReadWriteTx() (rw *ReadWriteTx) {
-	rw = &ReadWriteTx{
+// newupdateTxn returns a new read/write transaction, used by read/write transaction pool
+func (h *Hippy) newupdateTxn() (u *updateTxn) {
+	u = &updateTxn{
 		h: h,
 		a: &Bucket{
 			m: make(map[string]interface{}),
 		},
 	}
 
-	rw.a.txn = rw
+	u.a.txn = u
 	return
 }
 
-// getReadTx returns a new read transaction from the read transaction pool
-func (h *Hippy) getReadTx() (tx *ReadTx) {
-	tx, _ = h.rtxp.Get().(*ReadTx)
+// getreadTxn returns a new read transaction from the read transaction pool
+func (h *Hippy) getreadTxn() (txn *readTxn) {
+	txn, _ = h.rtxp.Get().(*readTxn)
 	return
 }
 
-// getWriteTx returns a new write transaction from the write transaction pool
-func (h *Hippy) getWriteTx() (tx *WriteTx) {
-	tx, _ = h.wtxp.Get().(*WriteTx)
+// getupdateTxn returns a new read/write transaction from the read/write transaction pool
+func (h *Hippy) getupdateTxn() (txn *updateTxn) {
+	txn, _ = h.utxp.Get().(*updateTxn)
 	return
 }
 
-// getReadWriteTx returns a new read/write transaction from the read/write transaction pool
-func (h *Hippy) getReadWriteTx() (tx *ReadWriteTx) {
-	tx, _ = h.rwtxp.Get().(*ReadWriteTx)
-	return
+// putreadTxn releases a read transaction back to the read transaction pool
+func (h *Hippy) putreadTxn(txn *readTxn) {
+	h.rtxp.Put(txn)
 }
 
-// putReadTx releases a read transaction back to the read transaction pool
-func (h *Hippy) putReadTx(tx *ReadTx) {
-	h.rtxp.Put(tx)
-}
-
-// putWriteTx releases a write transaction back to the write transaction pool
-func (h *Hippy) putWriteTx(tx *WriteTx) {
-	for k := range tx.a.m {
-		delete(tx.a.m, k)
+// putupdateTxn releases a read/write transaction back to the read/write transaction pool
+func (h *Hippy) putupdateTxn(txn *updateTxn) {
+	for k := range txn.a.m {
+		delete(txn.a.m, k)
 	}
 
-	h.wtxp.Put(tx)
-}
-
-// putReadWriteTx releases a read/write transaction back to the read/write transaction pool
-func (h *Hippy) putReadWriteTx(tx *ReadWriteTx) {
-	for k := range tx.a.m {
-		delete(tx.a.m, k)
-	}
-
-	h.rwtxp.Put(tx)
+	h.utxp.Put(txn)
 }
 
 // Read will return a read-only transaction
-func (h *Hippy) Read(fn func(*ReadTx) error) (err error) {
+func (h *Hippy) Read(fn TxnFn) (err error) {
 	// Get a read transaction from the pool
-	tx := h.getReadTx()
+	txn := h.getreadTxn()
 
 	h.mux.RLock()
 	if h.closed {
 		err = ErrIsClosed
 	} else {
-		err = fn(tx)
+		err = fn(txn)
 	}
 	h.mux.RUnlock()
 
 	// Return read transaction to the pool
-	h.putReadTx(tx)
+	h.putreadTxn(txn)
 	return
 }
 
-// ReadWrite returns a read/write transaction
-func (h *Hippy) ReadWrite(fn func(*ReadWriteTx) error) (err error) {
+// Update returns a read/write transaction
+func (h *Hippy) Update(fn TxnFn) (err error) {
 	// Get a read/write transaction from the pool
-	tx := h.getReadWriteTx()
+	txn := h.getupdateTxn()
 
 	h.mux.Lock()
 	if h.closed {
@@ -729,36 +696,14 @@ func (h *Hippy) ReadWrite(fn func(*ReadWriteTx) error) (err error) {
 		goto END
 	}
 
-	if err = fn(tx); err == nil {
-		err = h.write(tx.a)
+	if err = fn(txn); err == nil {
+		err = h.write(txn.a)
 	}
 
 END:
 	h.mux.Unlock()
 	// Return read/write transaction to the pool
-	h.putReadWriteTx(tx)
-	return
-}
-
-// Write returns a write-only transaction
-func (h *Hippy) Write(fn func(*WriteTx) error) (err error) {
-	// Get a write transaction from the pool
-	tx := h.getWriteTx()
-
-	h.mux.Lock()
-	if h.closed {
-		err = ErrIsClosed
-		goto END
-	}
-
-	if err = fn(tx); err == nil {
-		err = h.write(tx.a)
-	}
-
-END:
-	h.mux.Unlock()
-	// Return write transaction to the pool
-	h.putWriteTx(tx)
+	h.putupdateTxn(txn)
 	return
 }
 
