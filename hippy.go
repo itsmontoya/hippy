@@ -6,7 +6,6 @@ import (
 	"os"
 	"sync"
 
-	"fmt"
 	"github.com/itsmontoya/lineFile"
 	"github.com/itsmontoya/middleware"
 	"github.com/missionMeteora/toolkit/bufferPool"
@@ -77,9 +76,12 @@ func New(opts Opts, mws ...middleware.Middleware) (h *Hippy, err error) {
 	// Create Hippy, he doesn't smell.. quite yet.
 	hip := Hippy{
 		opts: opts,
-
-		root: &Bucket{m: make(map[string]interface{})},
 		mws:  middleware.NewMWs(mws...),
+	}
+
+	hip.root = &Bucket{
+		txn: &readTxn{&hip},
+		m:   make(map[string]interface{}),
 	}
 
 	// Open persistance file
@@ -281,7 +283,6 @@ func (h *Hippy) replay() (err error) {
 		case _hash:
 		case _put:
 			if bkt.ufn == nil {
-				fmt.Println("Putting raw value", string(val))
 				v = RawValue(val)
 			} else {
 				// Put value by key
@@ -375,7 +376,6 @@ func (h *Hippy) write(actions *Bucket) (err error) {
 			continue
 		}
 
-		fmt.Println("Creating bucket!", bkt)
 		if rbkt, err = createBucket(h.root, bkt.keys, bkt.mfn, bkt.ufn); err != nil {
 			return
 		}

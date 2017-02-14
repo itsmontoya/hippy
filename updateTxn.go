@@ -143,8 +143,11 @@ func (txn *updateTxn) get(keys []string, k string) (d Duper) {
 	}
 
 	// Try to get value at bucket matching our key and attempt to assert type as action
-	if ta, ok = bkt.m[k].(action); !ok {
-		goto END
+	switch v := bkt.m[k].(type) {
+	case action:
+		ta = v
+	case nil:
+		goto ROOT
 	}
 
 	// Set the value to our transaction-level value

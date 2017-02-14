@@ -1,9 +1,5 @@
 package hippy
 
-import (
-	"fmt"
-)
-
 func newBucket() *Bucket {
 	return &Bucket{
 		m: make(map[string]interface{}),
@@ -57,7 +53,6 @@ func (b *Bucket) buckets() (bs []string) {
 }
 
 func (b *Bucket) parseRaw() (err error) {
-	fmt.Println("About to parse raw", b.ufn, b.m)
 	if b.ufn == nil {
 		return
 	}
@@ -69,11 +64,9 @@ func (b *Bucket) parseRaw() (err error) {
 
 	for k, v := range b.m {
 		if rv, ok = v.(RawValue); !ok {
-			fmt.Println("Not a raw value", v)
 			continue
 		}
 
-		fmt.Println("About to call ufn for", k, string(rv))
 		if v, err = b.ufn(rv[:]); err != nil {
 			continue
 		}
@@ -171,9 +164,5 @@ func (b *Bucket) Delete(k string) error {
 
 // ForEach will iterate through each item within a bucket
 func (b *Bucket) ForEach(fn func(k string, v interface{}) error) (err error) {
-	if b.txn == nil {
-		return b.forEach(fn)
-	}
-
 	return b.txn.forEach(b.keys, fn)
 }
