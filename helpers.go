@@ -1,5 +1,9 @@
 package hippy
 
+import (
+	"fmt"
+)
+
 type txn uint8
 
 const (
@@ -82,6 +86,7 @@ func createBucket(bkt *Bucket, keys []string, mfn MarshalFn, ufn UnmarshalFn) (n
 		bkt = nbkt
 	}
 
+	fmt.Println("New bucket", nbkt.mfn, nbkt.ufn)
 	if nbkt.mfn == nil {
 		nbkt.mfn = mfn
 		nbkt.ufn = ufn

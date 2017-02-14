@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 
+	"fmt"
 	"github.com/itsmontoya/lineFile"
 	"github.com/itsmontoya/middleware"
 	"github.com/missionMeteora/toolkit/bufferPool"
@@ -271,14 +272,16 @@ func (h *Hippy) replay() (err error) {
 		}
 
 		ki := len(keys) - 1
-		bkt = bktP.Get()
-		bkt.keys = keys[:ki]
+		if bkt, err = createBucket(h.root, keys[:ki], nil, nil); err != nil {
+			return
+		}
 
 		// Fulfill action
 		switch a {
 		case _hash:
 		case _put:
 			if bkt.ufn == nil {
+				fmt.Println("Putting raw value", string(val))
 				v = RawValue(val)
 			} else {
 				// Put value by key
@@ -372,6 +375,7 @@ func (h *Hippy) write(actions *Bucket) (err error) {
 			continue
 		}
 
+		fmt.Println("Creating bucket!", bkt)
 		if rbkt, err = createBucket(h.root, bkt.keys, bkt.mfn, bkt.ufn); err != nil {
 			return
 		}
